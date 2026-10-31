@@ -10,10 +10,17 @@
 name: Update map
 
 on:
-  # Spúšťa ho externe cron-job.org (o :12 a :42 UTC) cez GitHub API, lebo vlastné
-  # plánovanie GitHubu (schedule) sa v tomto repozitári nespúšťalo spoľahlivo.
+  # Spúšťa ho externe cron-job.org cez GitHub API, lebo vlastné plánovanie
+  # GitHubu (schedule) sa v tomto repozitári nespúšťalo spoľahlivo:
+  #   :47 – stiahne snímku Netatmo (merania končia pri termíne ČHMÚ :50)
+  #   :05 – fetch=false, len prepočíta mapu (ČHMÚ okolo :01 zverejní dáta do :50)
   # Dá sa spustiť aj ručne z karty Actions.
   workflow_dispatch:
+    inputs:
+      fetch:
+        description: "Stiahnuť novú snímku Netatmo (inak len prepočítať mapu)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -53,7 +60,7 @@ jobs:
           NETATMO_CLIENT_ID: ${{ secrets.NETATMO_CLIENT_ID }}
           NETATMO_CLIENT_SECRET: ${{ secrets.NETATMO_CLIENT_SECRET }}
           NETATMO_REFRESH_TOKEN: ${{ secrets.NETATMO_REFRESH_TOKEN }}
-        run: python fetch.py --keep-hours 48
+        run: python fetch.py --keep-hours 48 ${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }}
 
       # Netatmo môže pri obnove vydať nový refresh token a starý zneplatniť.
       # Nový sa preto uloží späť do Secrets (beží aj vtedy, keď predošlý krok zlyhal).
