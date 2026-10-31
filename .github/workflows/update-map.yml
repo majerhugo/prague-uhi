@@ -10,8 +10,11 @@
 name: Update map
 
 on:
+  # GitHub plánované behy okolo celej hodiny často oneskorí alebo vynechá,
+  # preto dva behy za hodinu mimo špičky (≈ 200 z 500 povolených Netatmo požiadaviek).
   schedule:
-    - cron: "5 * * * *"   # každú hodinu o :05 UTC (GitHub ho môže spustiť s oneskorením)
+    - cron: "12 * * * *"
+    - cron: "42 * * * *"
   workflow_dispatch:       # ručné spustenie z karty Actions
 
 permissions:
