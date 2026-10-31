@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prague Urban Heat Island</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  .basemap { filter: grayscale(1) brightness(1.05) contrast(.85); }
+
+  .uhi-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; box-sizing: border-box;
+    border-radius: 50%; border: 1px solid rgba(0, 0, 0, .35);
+    font-size: 11px; font-weight: 600; letter-spacing: -.02em;
+  }
+
+  .ref-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; box-sizing: border-box;
+    background: #222; color: #fff; border: 2px solid #fff; border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+    font-size: 11px; font-weight: 600;
+  }
+
+  .panel {
+    background: #fff; padding: 10px 12px; border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+    font-size: 13px; line-height: 1.45; max-width: 250px;
+  }
+  .panel h1 { font-size: 15px; margin: 0 0 6px; }
+  .panel .muted { color: #666; font-size: 12px; }
+  .panel .formula { margin: 6px 0; font-size: 12px; }
+  .panel .warn { color: #8a5300; font-size: 12px; margin-top: 4px; }
+  .legend-bar { height: 10px; border-radius: 3px; margin: 8px 0 2px; }
+  .legend-scale { display: flex; justify-content: space-between; font-size: 11px; color: #444; }
+  .error { color: #b00020; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Farebná škála intenzity UHI (°C): modrá = chladnejšie než vidiek, červená = teplejšie
+const STOPS = [
+  [-2, [33, 102, 172]],
+  [-1, [103, 169, 207]],
+  [ 0, [247, 247, 247]],
+  [ 1, [253, 219, 199]],
+  [ 2, [244, 165, 130]],
+  [ 3, [214, 96, 77]],
+  [ 4, [178, 24, 43]],
+  [ 5, [103, 0, 31]],
+];
+const LABEL_ZOOM = 12;  // od tohto priblíženia sa zobrazujú čísla
+
+function color(v) {
+  if (v <= STOPS[0][0]) return `rgb(${STOPS[0][1]})`;
+  for (let i = 1; i < STOPS.length; i++) {
+    const [v1, c1] = STOPS[i];
+    if (v <= v1) {
+      const [v0, c0] = STOPS[i - 1];
+      const t = (v - v0) / (v1 - v0);
+      return `rgb(${c0.map((c, k) => Math.round(c + t * (c1[k] - c)))})`;
+    }
+  }
+  return `rgb(${STOPS[STOPS.length - 1][1]})`;
+}
+
+const fmt = v => (v > 0 ? "+" : "") + v.toFixed(1);
+
+function makeIcon(uhi, withLabel) {
+  const size = withLabel ? 32 : 12;
+  const textColor = uhi >= 3.5 || uhi <= -1.5 ? "#fff" : "#111";
+  return L.divIcon({
+    className: "",
+    iconSize: [size, size],
+    html: `<div class="uhi-marker" style="background:${color(uhi)};color:${textColor}">${withLabel ? fmt(uhi) : ""}</div>`,
+  });
+}
+
+const map = L.map("map").setView([50.0755, 14.4378], 11);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  className: "basemap",
+  maxZoom: 19,
+}).addTo(map);
+
+const info = L.control({ position: "topright" });
+info.onAdd = () => {
+  const div = L.DomUtil.create("div", "panel");
+  div.innerHTML = "<h1>Prague Urban Heat Island</h1>Loading…";
+  return div;
+};
+info.addTo(map);
+const panel = info.getContainer();
+
+// Dáta sú v UTC; zobrazujú sa v pražskom čase (SEČ/SELČ sa prepína automaticky).
+const TZ = "Europe/Prague";
+const STALE_HOURS = 3;  // po tomto čase bez aktualizácie sa zobrazí upozornenie
+const fmtTime = iso => new Date(iso).toLocaleString("en-GB", {
+  timeZone: TZ, day: "numeric", month: "short", year: "numeric",
+  hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+});
+const fmtHM = iso => new Date(iso).toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+
+function popupHtml(p) {
+  if (p.role === "reference") {
+    return `<b>${p.name}</b><br>CHMI reference station<br>
+      Air temperature: ${p.temp.toFixed(1)} °C<br>
+      Elevation: ${p.alt} m a.s.l.<br>
+      Observed: ${fmtTime(p.time)}`;
+  }
+  return `<b>UHI intensity: ${fmt(p.uhi)} °C</b><br>
+    Air temperature: ${p.temp.toFixed(1)} °C<br>
+    CHMI reference: ${p.ref.toFixed(1)} °C at ${fmtHM(p.ref_time)}<br>
+    ${p.alt != null ? `Elevation: ${p.alt} m a.s.l.<br>` : ""}
+    Observed: ${fmtTime(p.time)}<br>
+    <span style="color:#888">Netatmo station ${p.id}</span>`;
+}
+
+const refIcon = temp => L.divIcon({
+  className: "",
+  iconSize: [44, 24],
+  html: `<div class="ref-marker">${temp.toFixed(1)}°</div>`,
+});
+
+function render(data) {
+  const m = data.metadata;
+  const urbanMarkers = [];
+  const urban = L.layerGroup().addTo(map);
+  const reference = L.layerGroup().addTo(map);
+
+  for (const f of data.features) {
+    const [lon, lat] = f.geometry.coordinates;
+    const p = f.properties;
+    if (p.role === "netatmo") {
+      const mk = L.marker([lat, lon], { icon: makeIcon(p.uhi, map.getZoom() >= LABEL_ZOOM) })
+        .bindPopup(popupHtml(p));
+      mk.uhi = p.uhi;
+      urbanMarkers.push(mk);
+      urban.addLayer(mk);
+    } else {
+      L.marker([lat, lon], { icon: refIcon(p.temp), zIndexOffset: 1000 })
+        .bindPopup(popupHtml(p)).addTo(reference);
+    }
+  }
+
+  // čísla len pri dostatočnom priblížení, inak by sa prekrývali
+  let labelled = map.getZoom() >= LABEL_ZOOM;
+  map.on("zoomend", () => {
+    const want = map.getZoom() >= LABEL_ZOOM;
+    if (want === labelled) return;
+    labelled = want;
+    for (const mk of urbanMarkers) mk.setIcon(makeIcon(mk.uhi, want));
+  });
+
+  L.control.layers(null, {
+    "Netatmo stations (UHI intensity)": urban,
+    "CHMI reference stations": reference,
+  }, { position: "topleft" }).addTo(map);
+
+  const gradient = STOPS.map(([v, c]) => `rgb(${c}) ${((v - STOPS[0][0]) / (STOPS.at(-1)[0] - STOPS[0][0]) * 100).toFixed(0)}%`).join(",");
+  const stale = Date.now() - new Date(m.snapshot_time) > STALE_HOURS * 3600e3;
+  panel.innerHTML = `
+    <h1>Prague Urban Heat Island</h1>
+    <b>${fmtTime(m.snapshot_time)}</b>
+    <div class="muted">median time of Netatmo observations</div>
+    ${stale ? `<div class="warn">Data have not been updated for more than ${STALE_HOURS} hours.</div>` : ""}
+    <p class="formula">UHI intensity = air temperature in the city (Netatmo stations) −
+    air temperature outside the city (mean of CHMI stations ${m.ref_stations.join(" and ")})</p>
+    <b>Netatmo:</b> ${m.n_netatmo} stations, observed ${fmtHM(m.time_range[0])}–${fmtHM(m.time_range[1])}<br>
+    <b>CHMI reference:</b> ${m.ref_temp.toFixed(1)} °C at ${fmtHM(m.ref_time)}
+    ${m.approximate ? '<div class="warn">Preliminary: the reference is not from the same time as the Netatmo observations.</div>' : ""}
+    <div class="legend-bar" style="background:linear-gradient(to right,${gradient})"></div>
+    <div class="legend-scale">${STOPS.map(([v]) => `<span>${fmt(v)}</span>`).join("")}</div>
+    <div class="muted" style="text-align:center">UHI intensity (°C)</div>
+    <div class="muted" style="margin-top:6px">Updated: ${fmtTime(m.generated)}<br>
+    Data: Netatmo public weather stations; Czech Hydrometeorological Institute (CHMI) open data</div>`;
+}
+
+fetch("data/praha.geojson")
+  .then(r => r.json())
+  .then(b => L.geoJSON(b, { interactive: false, style: { color: "#333", weight: 1.5, dashArray: "6 4", fill: false } }).addTo(map))
+  .catch(() => {});
+
+fetch("data/stations.geojson?" + Date.now())
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(render)
+  .catch(err => {
+    panel.innerHTML = `<h1>Prague Urban Heat Island</h1>
+      <div class="error">Could not load data (${err.message}).</div>`;
+  });
+</script>
+</body>
+</html>

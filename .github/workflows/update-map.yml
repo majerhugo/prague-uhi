@@ -1,0 +1,89 @@
+# Každú hodinu stiahne Netatmo snímku, prepočíta mapu a zverejní ju na GitHub Pages.
+#
+# Kód je vo vetve main. Web (index.html + data) sa zakaždým nahrá ako jediný commit
+# do vetvy gh-pages (force push), aby história repozitára nerástla.
+# Snímky z predchádzajúcich behov sa preberajú z gh-pages.
+#
+# Potrebné Secrets: NETATMO_CLIENT_ID, NETATMO_CLIENT_SECRET, NETATMO_REFRESH_TOKEN,
+# SECRETS_PAT (fine-grained token s oprávnením "Secrets: Read and write" len pre tento repozitár).
+
+name: Update map
+
+on:
+  schedule:
+    - cron: "5 * * * *"   # každú hodinu o :05 UTC (GitHub ho môže spustiť s oneskorením)
+  workflow_dispatch:       # ručné spustenie z karty Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-map
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore data from gh-pages
+        run: |
+          mkdir -p data/snapshots
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            git fetch --depth 1 origin gh-pages
+            mkdir -p /tmp/prev
+            git archive FETCH_HEAD data | tar -x -C /tmp/prev || true
+            cp /tmp/prev/data/snapshots/*.json data/snapshots/ 2>/dev/null || true
+            cp /tmp/prev/data/stations.geojson data/ 2>/dev/null || true
+          fi
+          echo "Obnovené snímky: $(ls data/snapshots | wc -l)"
+
+      - name: Fetch data and build map
+        env:
+          NETATMO_CLIENT_ID: ${{ secrets.NETATMO_CLIENT_ID }}
+          NETATMO_CLIENT_SECRET: ${{ secrets.NETATMO_CLIENT_SECRET }}
+          NETATMO_REFRESH_TOKEN: ${{ secrets.NETATMO_REFRESH_TOKEN }}
+        run: python fetch.py --keep-hours 48
+
+      # Netatmo môže pri obnove vydať nový refresh token a starý zneplatniť.
+      # Nový sa preto uloží späť do Secrets (beží aj vtedy, keď predošlý krok zlyhal).
+      - name: Save rotated refresh token
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+          OLD_TOKEN: ${{ secrets.NETATMO_REFRESH_TOKEN }}
+        run: |
+          if [ -f token.json ]; then
+            NEW_TOKEN=$(python -c "import json; print(json.load(open('token.json'))['refresh_token'])")
+            echo "::add-mask::$NEW_TOKEN"
+            if [ "$NEW_TOKEN" != "$OLD_TOKEN" ]; then
+              gh secret set NETATMO_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY" --body "$NEW_TOKEN"
+              echo "Refresh token sa zmenil a bol uložený."
+            fi
+          fi
+
+      - name: Publish to gh-pages
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site/data
+          cp index.html _site/
+          cp data/*.geojson _site/data/
+          cp -r data/snapshots _site/data/
+          touch _site/.nojekyll
+          cd _site
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Update map $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

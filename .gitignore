@@ -1,0 +1,11 @@
+# prihlasovacie údaje – nikdy nenahrávať
+.env
+token.json
+
+# generované dáta (na webe sú vo vetve gh-pages)
+data/snapshots/
+data/stations.geojson
+
+# lokálne nastavenia
+.claude/
+__pycache__/
