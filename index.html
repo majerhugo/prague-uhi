@@ -192,8 +192,9 @@ fetch("data/stations.geojson?" + Date.now())
   .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
   .then(render)
   .catch(err => {
-    panel.innerHTML = `<h1>Prague Urban Heat Island</h1>
-      <div class="error">Could not load data (${err.message}).</div>`;
+    panel.innerHTML = `<h1>Prague Urban Heat Island</h1>` + (err.message === "404"
+      ? `<div class="muted">No data yet. The first map will appear within about two hours after the service starts.</div>`
+      : `<div class="error">Could not load data (${err.message}).</div>`);
   });
 </script>
 </body>
