@@ -12,7 +12,7 @@ trap 'rm -rf "$T"' EXIT
 
 REMOTE="$T/remote.git"
 git init -q --bare "$REMOTE"
-export REMOTE PYTHON DATA_BRANCH=data PAGES_BRANCH=pages
+export REMOTE PYTHON DATA_BRANCH=data PAGES_BRANCH=pages LEGACY_BRANCH=pages
 export MIGRATE_SKIP="netatmo-20261031-1347.json netatmo-20261031-1539.json"
 ident=(-c user.name=test -c user.email=test@example.com)
 
@@ -47,6 +47,13 @@ fail=0
 check() {
   if eval "$2"; then echo "  ok: $1"; else echo "  CHYBA: $1"; fail=1; fi
 }
+
+echo "== skúšobný beh ako v cloude (zápis do iných vetiev, staré snímky sa len čítajú)"
+DATA_BRANCH=data-test PAGES_BRANCH=pages-test run_pipeline
+check "skúšobná vetva archívu má prevedené snímky" 'git --git-dir="$REMOTE" ls-tree -r --name-only data-test | grep -qx slots/2026-10-31/15.json'
+check "skúšobný web je publikovaný" 'git --git-dir="$REMOTE" ls-tree -r --name-only pages-test | grep -qx data/index.json'
+check "zdrojová vetva so starými snímkami ostala nezmenená" 'pages_files | grep -q "data/snapshots/"'
+check "ostrá vetva data pritom nevznikla" '! git --git-dir="$REMOTE" rev-parse --verify -q data > /dev/null'
 
 echo "== beh 1 (vetva s archívom ešte neexistuje, vo webe sú staré snímky)"
 run_pipeline

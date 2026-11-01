@@ -41,6 +41,8 @@ env:
   REMOTE: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
   DATA_BRANCH: ${{ github.event.inputs.data_branch || 'data' }}
   PAGES_BRANCH: ${{ github.event.inputs.pages_branch || 'gh-pages' }}
+  # odtiaľto sa len čítajú staré snímky na jednorazový prevod (nikdy sa tam nezapisuje)
+  LEGACY_BRANCH: gh-pages
   # ručné spustenia mimo hodinovej mriežky, ktoré sa pri jednorazovom prevode starých snímok vynechajú
   MIGRATE_SKIP: netatmo-20261031-1347.json netatmo-20261031-1539.json
 
