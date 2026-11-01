@@ -1,8 +1,13 @@
-# Každú hodinu stiahne Netatmo snímku, prepočíta mapu a zverejní ju na GitHub Pages.
+# Hodinový cyklus: cron-job.org volá GitHub API (workflow_dispatch na vetve main), lebo vlastné
+# plánovanie GitHubu (schedule) sa v tomto repozitári nespúšťalo spoľahlivo:
+#   :47 - stiahne snímku Netatmo (merania končia pri termíne ČHMÚ :50)
+#   :05 - fetch=false, len doplní referenciu ČHMÚ a prebuduje web
+#         (ČHMÚ okolo :01 zverejní dáta do :50 predchádzajúcej hodiny)
+# Dá sa spustiť aj ručne z karty Actions.
 #
-# Kód je vo vetve main. Web (index.html + data) sa zakaždým nahrá ako jediný commit
-# do vetvy gh-pages (force push), aby história repozitára nerástla.
-# Snímky z predchádzajúcich behov sa preberajú z gh-pages.
+# Dáta: vetva `data` (archív, len pribúdajú commity, jeden súbor na hodinu).
+# Web: vetva `gh-pages` (index.html + dáta pre web, jediný commit, force push).
+# Na skúšky v iných vetvách nastav vstupy data_branch a pages_branch - ostré vetvy sa nedotkne.
 #
 # Potrebné Secrets: NETATMO_CLIENT_ID, NETATMO_CLIENT_SECRET, NETATMO_REFRESH_TOKEN,
 # SECRETS_PAT (fine-grained token s oprávnením "Secrets: Read and write" len pre tento repozitár).
@@ -10,17 +15,20 @@
 name: Update map
 
 on:
-  # Spúšťa ho externe cron-job.org cez GitHub API, lebo vlastné plánovanie
-  # GitHubu (schedule) sa v tomto repozitári nespúšťalo spoľahlivo:
-  #   :47 – stiahne snímku Netatmo (merania končia pri termíne ČHMÚ :50)
-  #   :05 – fetch=false, len prepočíta mapu (ČHMÚ okolo :01 zverejní dáta do :50)
-  # Dá sa spustiť aj ručne z karty Actions.
   workflow_dispatch:
     inputs:
       fetch:
-        description: "Stiahnuť novú snímku Netatmo (inak len prepočítať mapu)"
+        description: "Stiahnuť novú snímku Netatmo (inak len prepočítať web)"
         type: boolean
         default: true
+      data_branch:
+        description: "Vetva s archívom (na skúšky použi inú než data)"
+        type: string
+        default: data
+      pages_branch:
+        description: "Vetva s webom (na skúšky použi inú než gh-pages)"
+        type: string
+        default: gh-pages
 
 permissions:
   contents: write
@@ -29,11 +37,25 @@ concurrency:
   group: update-map
   cancel-in-progress: false
 
+env:
+  REMOTE: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+  DATA_BRANCH: ${{ github.event.inputs.data_branch || 'data' }}
+  PAGES_BRANCH: ${{ github.event.inputs.pages_branch || 'gh-pages' }}
+  # ručné spustenia mimo hodinovej mriežky, ktoré sa pri jednorazovom prevode starých snímok vynechajú
+  MIGRATE_SKIP: netatmo-20261031-1347.json netatmo-20261031-1539.json
+
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Beh z inej vetvy než main smie písať len do skúšobných vetiev (vstupy data_branch a pages_branch).
+      - name: Guard against writing to production branches
+        if: github.ref_name != 'main' && (env.DATA_BRANCH == 'data' || env.PAGES_BRANCH == 'gh-pages')
+        run: |
+          echo "::error::Beh z vetvy $GITHUB_REF_NAME musí mať data_branch a pages_branch nastavené na skúšobné vetvy (nie data a gh-pages)."
+          exit 1
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -43,24 +65,19 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Restore data from gh-pages
-        run: |
-          mkdir -p data/snapshots
-          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
-            git fetch --depth 1 origin gh-pages
-            mkdir -p /tmp/prev
-            git archive FETCH_HEAD data | tar -x -C /tmp/prev || true
-            cp /tmp/prev/data/snapshots/*.json data/snapshots/ 2>/dev/null || true
-            cp /tmp/prev/data/stations.geojson data/ 2>/dev/null || true
-          fi
-          echo "Obnovené snímky: $(ls data/snapshots | wc -l)"
+      - name: Restore archive
+        id: restore
+        run: bash scripts/pull_data.sh
 
-      - name: Fetch data and build map
+      - name: Migrate legacy snapshots (one-off)
+        run: bash scripts/migrate_legacy.sh
+
+      - name: Fetch data and build site files
         env:
           NETATMO_CLIENT_ID: ${{ secrets.NETATMO_CLIENT_ID }}
           NETATMO_CLIENT_SECRET: ${{ secrets.NETATMO_CLIENT_SECRET }}
           NETATMO_REFRESH_TOKEN: ${{ secrets.NETATMO_REFRESH_TOKEN }}
-        run: python fetch.py --keep-hours 720 ${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }}
+        run: python fetch.py ${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }}
 
       # Netatmo môže pri obnove vydať nový refresh token a starý zneplatniť.
       # Nový sa preto uloží späť do Secrets (beží aj vtedy, keď predošlý krok zlyhal).
@@ -79,19 +96,11 @@ jobs:
             fi
           fi
 
-      - name: Publish to gh-pages
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p _site/data
-          cp index.html _site/
-          cp data/*.geojson _site/data/
-          cp -r data/snapshots _site/data/
-          touch _site/.nojekyll
-          cd _site
-          git init -q -b gh-pages
-          git add -A
-          git -c user.name="github-actions[bot]" \
-              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -q -m "Update map $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+      # Archív sa uloží aj vtedy, keď po stiahnutí snímky zlyhal niektorý z ďalších krokov.
+      - name: Save archive
+        if: always() && steps.restore.outcome == 'success'
+        run: bash scripts/push_data.sh
+
+      - name: Publish site
+        if: success()
+        run: bash scripts/publish_site.sh

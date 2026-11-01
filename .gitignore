@@ -2,9 +2,13 @@
 .env
 token.json
 
-# generované dáta (na webe sú vo vetve gh-pages)
-data/snapshots/
-data/stations.geojson
+# archív (na GitHube vo vetve `data`), staré snímky a súbory generované pre web
+archive/
+legacy/
+_site/
+data/index.json
+data/registry.json
+data/days/
 
 # lokálne nastavenia
 .claude/

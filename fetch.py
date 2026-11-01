@@ -1,21 +1,19 @@
-"""Stiahne verejné Netatmo stanice v Prahe a vypočíta intenzitu mestského tepelného ostrova.
+"""Stiahne verejné Netatmo stanice v Prahe a uloží ich do archívu (pozri archive.py).
 
-Intenzita UHI = teplota Netatmo stanice − priemer teplôt na staniciach ČHMÚ
-Praha-Ruzyně a Praha-Kbely v 10-minútovom termíne najbližšom k času merania stanice.
+Intenzita mestského tepelného ostrova (UHI) = teplota Netatmo stanice − priemer teplôt
+na staniciach ČHMÚ Praha-Ruzyně a Praha-Kbely v 10-minútovom termíne najbližšom k času
+merania stanice. Počíta sa až na webe, v archíve sú surové teploty.
 
-Dáta ČHMÚ meškajú asi hodinu. Každé spustenie preto uloží snímku Netatmo staníc
-do data/snapshots/ a mapu vypočíta z najnovšej snímky, pre ktorú už ČHMÚ
-zverejnil potrebné termíny.
+Dáta ČHMÚ meškajú asi hodinu, preto sa snímka na webe objaví, až keď ČHMÚ zverejní
+termíny, ktoré potrebuje.
 
 Použitie:
-    python fetch.py            # stiahne snímku a aktualizuje mapu
-    python fetch.py --no-fetch # len prepočíta mapu z uložených snímok
-    python fetch.py --now      # najnovšia snímka + najbližší dostupný termín ČHMÚ (na testovanie)
+    python fetch.py            # stiahne snímku Netatmo, doplní referenciu ČHMÚ a prebuduje web
+    python fetch.py --no-fetch # bez sťahovania z Netatmo (doplní referenciu a prebuduje web)
 """
 import argparse
 import json
 import os
-import statistics
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -24,14 +22,16 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+import archive
+
 ROOT = Path(__file__).parent
-OUT = ROOT / "data" / "stations.geojson"
-SNAPSHOTS = ROOT / "data" / "snapshots"
+ARCHIVE = ROOT / "archive"   # archív (na GitHube vo vetve `data`)
+WEB = ROOT / "data"          # súbory generované pre web
 TOKEN_FILE = ROOT / "token.json"
 NETATMO_API = "https://api.netatmo.com"
 CHMI_DATA = "https://opendata.chmi.cz/meteorology/climate/now/data"
 
-BOUNDARY = ROOT / "data" / "praha.geojson"  # hranica hl. m. Prahy (OpenStreetMap)
+BOUNDARY = WEB / "praha.geojson"  # hranica hl. m. Prahy (OpenStreetMap)
 TILE_STEP = 0.03             # veľkosť dlaždice (°) pri sťahovaní z Netatmo
 REQUEST_PAUSE = 0.5          # s; limit API je 50 požiadaviek / 10 s
 RETRY_WAITS = [2, 5, 10]     # s; pauzy pred opakovaním pri chybe 5xx
@@ -42,7 +42,8 @@ CHMI_STATIONS = {
     "0-20000-0-11518": {"name": "Praha-Ruzyně", "lat": 50.100278, "lon": 14.255556, "alt": 364},
     "0-20000-0-11567": {"name": "Praha-Kbely", "lat": 50.123333, "lon": 14.538056, "alt": 284.5},
 }
-CHMI_STEP = timedelta(minutes=10)
+REF_STATIONS = [{"id": wsi, **st} for wsi, st in CHMI_STATIONS.items()]
+CHMI_DAYS = 3                # ČHMÚ drží v "now" dnešok a dva predchádzajúce dni
 
 
 def load_boundary():
@@ -79,14 +80,6 @@ def tiles(ring, step):
                 yield t
             lon += step
         lat += step
-
-
-def utc(ts):
-    return datetime.fromtimestamp(ts, timezone.utc)
-
-
-def iso(dt):
-    return dt.isoformat(timespec="seconds")
 
 
 # --- Netatmo API -------------------------------------------------------------
@@ -173,177 +166,64 @@ def fetch_netatmo():
     return [s for s in stations.values() if inside(ring, s["lon"], s["lat"])]
 
 
-def save_snapshot(stations):
+def store_slot(stations):
+    """Uloží stiahnuté stanice do archívu (hodinový termín podľa mediánu času meraní)."""
     fetched = datetime.now(timezone.utc)
     fresh = [s for s in stations if fetched.timestamp() - s["ts"] <= MAX_AGE_MIN * 60]
-    SNAPSHOTS.mkdir(parents=True, exist_ok=True)
-    path = SNAPSHOTS / f"netatmo-{fetched:%Y%m%d-%H%M}.json"
-    path.write_text(json.dumps({"fetched": iso(fetched), "stations": fresh}), encoding="utf-8")
-    print(f"  snímka: {path.name} ({len(fresh)} staníc, {len(stations) - len(fresh)} so starým meraním vynechaných)")
-
-
-def load_snapshots():
-    """Uložené snímky od najnovšej."""
-    for path in sorted(SNAPSHOTS.glob("netatmo-*.json"), reverse=True):
-        yield json.loads(path.read_text(encoding="utf-8"))
-
-
-def prune_snapshots(keep_hours):
-    """Zmaže snímky staršie než keep_hours (podľa času v názve súboru)."""
-    limit = datetime.now(timezone.utc) - timedelta(hours=keep_hours)
-    removed = 0
-    for path in SNAPSHOTS.glob("netatmo-*.json"):
-        taken = datetime.strptime(path.stem, "netatmo-%Y%m%d-%H%M").replace(tzinfo=timezone.utc)
-        if taken < limit:
-            path.unlink()
-            removed += 1
-    if removed:
-        print(f"  zmazaných starých snímok: {removed}")
+    if not fresh:
+        print("  Netatmo nevrátilo žiadne čerstvé merania – snímka sa neukladá.", file=sys.stderr)
+        return
+    registry = archive.Registry(ARCHIVE / "registry.json")
+    rows = len(registry.rows)
+    slot, saved = archive.save_slot(ARCHIVE, registry, fresh, archive.iso(fetched))
+    print(f"  snímka {archive.utc(slot):%d.%m. %H:00} UTC: {len(fresh)} staníc, "
+          f"{len(stations) - len(fresh)} so starým meraním vynechaných, "
+          f"nových riadkov v registri: {len(registry.rows) - rows}"
+          + ("" if saved else " – termín už mal novšiu snímku, nič sa neuložilo"))
 
 
 # --- ČHMÚ --------------------------------------------------------------------
 
-def fetch_chmi_temperatures(wsi):
-    """10-min. teploty (element T) stanice za včerajšok a dnešok: {čas: °C}."""
-    out = {}
+def fetch_chmi_series():
+    """{wsi: {čas (UTC): °C}} z 10-min. dát ČHMÚ (element T) za posledné dni."""
     today = datetime.now(timezone.utc).date()
-    for day in (today - timedelta(days=1), today):
-        r = requests.get(f"{CHMI_DATA}/10m-{wsi}-{day:%Y%m%d}.json", timeout=30)
-        if r.status_code != 200:
-            continue
-        for station, element, dt, val, *_ in r.json()["data"]["data"]["values"]:
-            if element == "T" and val is not None:
-                out[datetime.fromisoformat(dt.replace("Z", "+00:00"))] = val
-    return out
-
-
-class Reference:
-    """Priemerná teplota referenčných staníc v čase.
-
-    Používajú sa len termíny, ktoré majú všetky stanice, aby priemer
-    nekolísal podľa toho, ktorá stanica práve chýba.
-    """
-
-    def __init__(self):
-        self.series = {wsi: fetch_chmi_temperatures(wsi) for wsi in CHMI_STATIONS}
-        common = set.intersection(*(set(s) for s in self.series.values()))
-        if not common:
-            sys.exit("ČHMÚ: žiadny spoločný termín merania referenčných staníc.")
-        self.times = sorted(common)
-        self.mean = {t: statistics.mean(s[t] for s in self.series.values()) for t in self.times}
-
-    @property
-    def last(self):
-        return self.times[-1]
-
-    def nearest_available(self, t):
-        """Najbližší zverejnený termín bez ohľadu na rozdiel (pre --now)."""
-        return min(self.times, key=lambda c: abs(c - t))
-
-
-def nearest_term(t):
-    """10-min. termín ČHMÚ najbližší k času t (13:04 → 13:00, 13:06 → 13:10)."""
-    term = t.replace(minute=t.minute // 10 * 10, second=0, microsecond=0)
-    return term + CHMI_STEP if t - term >= CHMI_STEP / 2 else term
-
-
-# --- Výpočet a výstup ----------------------------------------------------------
-
-def find_ready_snapshot(ref):
-    """Najnovšia snímka, pre ktorej všetky merania už ČHMÚ zverejnil najbližší termín."""
-    for snap in load_snapshots():
-        if snap["stations"] and max(nearest_term(utc(s["ts"])) for s in snap["stations"]) <= ref.last:
-            return snap
-    return None
-
-
-def write_geojson(snap, ref, approximate):
-    features = []
-    used_terms = []
-    for s in snap["stations"]:
-        t = utc(s["ts"])
-        term = ref.nearest_available(t) if approximate else nearest_term(t)
-        if term not in ref.mean:
-            continue
-        r = ref.mean[term]
-        used_terms.append(term)
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [round(s["lon"], 5), round(s["lat"], 5)]},
-            "properties": {
-                "id": s["id"],
-                "role": "netatmo",
-                "temp": s["temp"],
-                "ref": round(r, 2),
-                "ref_time": iso(term),
-                "uhi": round(s["temp"] - r, 1),
-                "alt": s["alt"],
-                "time": iso(t),
-            },
-        })
-
-    times = [utc(s["ts"]) for s in snap["stations"]]
-    snap_time = utc(statistics.median(s["ts"] for s in snap["stations"]))
-    ref_term = min(ref.times, key=lambda c: abs(c - snap_time))
-    for wsi, st in CHMI_STATIONS.items():
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [st["lon"], st["lat"]]},
-            "properties": {"id": wsi, "name": st["name"], "role": "reference",
-                           "temp": ref.series[wsi][ref_term], "alt": st["alt"], "time": iso(ref_term)},
-        })
-
-    n = sum(f["properties"]["role"] == "netatmo" for f in features)
-    data = {
-        "type": "FeatureCollection",
-        "metadata": {
-            "generated": iso(datetime.now(timezone.utc)),
-            "approximate": approximate,
-            "snapshot_time": iso(snap_time),
-            "time_range": [iso(min(times)), iso(max(times))],
-            "ref_stations": [st["name"] for st in CHMI_STATIONS.values()],
-            "ref_temp": round(ref.mean[ref_term], 2),
-            "ref_time": iso(ref_term),
-            "ref_terms": [iso(min(used_terms)), iso(max(used_terms))],
-            "n_netatmo": n,
-        },
-        "features": features,
-    }
-    OUT.parent.mkdir(exist_ok=True)
-    OUT.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    print(f"  mapa: stav k {snap_time:%d.%m. %H:%M} UTC, {n} staníc, "
-          f"referencia {ref.mean[ref_term]:.1f} °C ({ref_term:%H:%M} UTC)"
-          + (" – PRIBLIŽNE, najbližší termín ČHMÚ" if approximate else ""))
+    series = {}
+    for wsi in CHMI_STATIONS:
+        series[wsi] = values = {}
+        for back in range(CHMI_DAYS):
+            day = today - timedelta(days=back)
+            r = requests.get(f"{CHMI_DATA}/10m-{wsi}-{day:%Y%m%d}.json", timeout=30)
+            if r.status_code != 200:
+                continue
+            for _, element, dt, val, *_ in r.json()["data"]["data"]["values"]:
+                if element == "T" and val is not None:
+                    values[datetime.fromisoformat(dt.replace("Z", "+00:00"))] = val
+    return series
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--no-fetch", action="store_true", help="nesťahovať Netatmo, len prepočítať mapu")
-    parser.add_argument("--now", action="store_true",
-                        help="použiť najnovšiu snímku s najbližším termínom ČHMÚ (bez čakania)")
-    parser.add_argument("--keep-hours", type=float,
-                        help="zmazať snímky staršie než toľko hodín (bez zadania sa nemaže nič)")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="nesťahovať Netatmo, len doplniť referenciu a prebudovať web")
     args = parser.parse_args()
 
     if not args.no_fetch:
         print("Sťahujem dáta z Netatmo…")
-        save_snapshot(fetch_netatmo())
+        store_slot(fetch_netatmo())
 
     print("Sťahujem referenciu z ČHMÚ…")
-    ref = Reference()
-    print(f"  posledný termín ČHMÚ: {ref.last:%d.%m. %H:%M} UTC")
+    try:
+        changed = archive.RefStore(ARCHIVE).update(fetch_chmi_series())
+        print("  doplnené dni: " + (", ".join(f"{d:%d.%m.}" for d in changed) or "žiadne zmeny"))
+    except requests.RequestException as e:
+        print(f"  ČHMÚ je nedostupné ({e}), použije sa už uložená referencia", file=sys.stderr)
 
-    if args.now:
-        snap = next(load_snapshots(), None)
+    slots = archive.build_web(ARCHIVE, WEB, REF_STATIONS)
+    if slots:
+        print(f"  web: {len(slots)} snímok, od {archive.utc(slots[0]):%d.%m. %H:00} "
+              f"do {archive.utc(slots[-1]):%d.%m. %H:00} UTC")
     else:
-        snap = find_ready_snapshot(ref)
-    if snap is None:
-        print("  zatiaľ žiadna snímka, pre ktorú by ČHMÚ už mal dáta – mapa sa nemení.")
-    else:
-        write_geojson(snap, ref, args.now)
-
-    if args.keep_hours is not None:
-        prune_snapshots(args.keep_hours)
+        print("  web: zatiaľ žiadna snímka s referenciou")
 
 
 if __name__ == "__main__":
