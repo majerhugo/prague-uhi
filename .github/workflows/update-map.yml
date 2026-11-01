@@ -60,7 +60,7 @@ jobs:
           NETATMO_CLIENT_ID: ${{ secrets.NETATMO_CLIENT_ID }}
           NETATMO_CLIENT_SECRET: ${{ secrets.NETATMO_CLIENT_SECRET }}
           NETATMO_REFRESH_TOKEN: ${{ secrets.NETATMO_REFRESH_TOKEN }}
-        run: python fetch.py --keep-hours 48 ${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }}
+        run: python fetch.py --keep-hours 720${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }}
 
       # Netatmo môže pri obnove vydať nový refresh token a starý zneplatniť.
       # Nový sa preto uloží späť do Secrets (beží aj vtedy, keď predošlý krok zlyhal).
