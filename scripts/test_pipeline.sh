@@ -83,7 +83,29 @@ echo '{"ver":1,"slots":[]}' > data/index.json
 bash scripts/publish_site.sh > /dev/null 2>&1
 check "prázdny web neprepíše publikovaný" '[ "$(git --git-dir="$REMOTE" rev-parse "$PAGES_BRANCH")" = "$pages_before" ]'
 cp "$T/index.bak" data/index.json
-check "nedostupný remote zastaví obnovu archívu" '! REMOTE=/neexistuje/repo.git bash scripts/pull_data.sh > /dev/null 2>&1'
+check "nedostupný remote zastaví obnovu archívu po opakovaniach" '! RETRY_SLEEP_CMD=: REMOTE=/neexistuje/repo.git bash scripts/pull_data.sh > /dev/null 2>&1'
+
+echo "== opakovanie pri prechodnej chybe"
+. scripts/retry.sh
+pokusy="$T/pokusy"
+echo 0 > "$pokusy"
+flaky() { local n=$(( $(cat "$pokusy") + 1 )); echo "$n" > "$pokusy"; [ "$n" -ge 3 ]; }
+check "retry uspeje po dvoch neúspešných pokusoch" 'RETRY_SLEEP_CMD=: retry test 5 1 flaky 2> /dev/null && [ "$(cat "$pokusy")" = 3 ]'
+check "retry sa po vyčerpaní pokusov vzdá" '! RETRY_SLEEP_CMD=: retry test 2 1 false 2> /dev/null'
+
+# vzdialený repozitár prvý push odmietne (simulácia výpadku GitHubu) a druhý prijme
+bash scripts/pull_data.sh > /dev/null
+hookcount="$T/hookcount"
+echo 0 > "$hookcount"
+cat > "$REMOTE/hooks/pre-receive" <<EOF
+#!/bin/sh
+c=\$(cat "$hookcount"); c=\$((c + 1)); echo \$c > "$hookcount"
+[ "\$c" -ge 2 ]
+EOF
+chmod +x "$REMOTE/hooks/pre-receive"
+echo probe > archive/probe.txt
+check "uloženie archívu prežije odmietnutý push" 'RETRY_SLEEP_CMD=: bash scripts/push_data.sh > /dev/null 2>&1 && data_files | grep -qx probe.txt && [ "$(cat "$hookcount")" = 2 ]'
+rm -f "$REMOTE/hooks/pre-receive"
 
 if [ "$fail" = 0 ]; then echo "VŠETKO V PORIADKU"; else echo "SÚ CHYBY"; fi
 exit "$fail"
