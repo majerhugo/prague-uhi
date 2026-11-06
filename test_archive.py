@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import archive
+import fetch
 
 T0 = int(datetime(2026, 11, 1, 14, 0, tzinfo=timezone.utc).timestamp())  # 14:00 UTC
 WSI = ["A", "B"]
@@ -111,12 +112,27 @@ class RefTest(TempDirTest):
         self.assertIsNone(refs.get("B", T0 + 600))
         self.assertIsNone(refs.get("A", T0 + 86400 * 5))
 
+    def test_update_skips_missing_values(self):
+        refs = archive.RefStore(self.base)
+        refs.update({"A": {dt(T0): 8.1, dt(T0 + 600): ""}})
+        self.assertEqual(refs.get("A", T0), 81)
+        self.assertIsNone(refs.get("A", T0 + 600))
+
     def test_update_is_idempotent_and_survives_reload(self):
         series = {"A": {dt(T0): 8.1}}
         archive.RefStore(self.base).update(series)
         reloaded = archive.RefStore(self.base)
         self.assertEqual(reloaded.update(series), [])
         self.assertEqual(reloaded.get("A", T0), 81)
+
+
+class ChmiParseTest(unittest.TestCase):
+    def test_empty_and_missing_values_are_skipped(self):
+        rows = [["S", "T", "2026-11-06T08:40:00Z", 7.5, "", 5.0],
+                ["S", "T", "2026-11-06T08:50:00Z", "", "", 4.0],    # skutočný prípad: Ruzyně 08:50 UTC
+                ["S", "T", "2026-11-06T09:00:00Z", None, "", 4.0],
+                ["S", "H", "2026-11-06T08:40:00Z", 80.0, "", 5.0]]  # iný element sa neberie
+        self.assertEqual(list(fetch.parse_chmi_values(rows).values()), [7.5])
 
 
 class WebTest(TempDirTest):

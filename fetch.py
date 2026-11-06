@@ -184,6 +184,19 @@ def store_slot(stations):
 
 # --- ČHMÚ --------------------------------------------------------------------
 
+def parse_chmi_values(rows):
+    """{čas (UTC): °C} z riadkov ČHMÚ [stanica, element, čas, hodnota, ...].
+
+    Chýbajúce meranie ČHMÚ uvádza ako prázdny text (napríklad Ruzyně 2026-11-06 08:50 UTC),
+    takéto hodnoty sa preskočia - berú sa len čísla.
+    """
+    values = {}
+    for _, element, dt, val, *_ in rows:
+        if element == "T" and isinstance(val, (int, float)) and not isinstance(val, bool):
+            values[datetime.fromisoformat(dt.replace("Z", "+00:00"))] = val
+    return values
+
+
 def fetch_chmi_series():
     """{wsi: {čas (UTC): °C}} z 10-min. dát ČHMÚ (element T) za posledné dni."""
     today = datetime.now(timezone.utc).date()
@@ -195,9 +208,7 @@ def fetch_chmi_series():
             r = requests.get(f"{CHMI_DATA}/10m-{wsi}-{day:%Y%m%d}.json", timeout=30)
             if r.status_code != 200:
                 continue
-            for _, element, dt, val, *_ in r.json()["data"]["data"]["values"]:
-                if element == "T" and val is not None:
-                    values[datetime.fromisoformat(dt.replace("Z", "+00:00"))] = val
+            values.update(parse_chmi_values(r.json()["data"]["data"]["values"]))
     return series
 
 
@@ -215,8 +226,9 @@ def main():
     try:
         changed = archive.RefStore(ARCHIVE).update(fetch_chmi_series())
         print("  doplnené dni: " + (", ".join(f"{d:%d.%m.}" for d in changed) or "žiadne zmeny"))
-    except requests.RequestException as e:
-        print(f"  ČHMÚ je nedostupné ({e}), použije sa už uložená referencia", file=sys.stderr)
+    except Exception as e:
+        # Chyba pri referencii nesmie zastaviť zverejnenie webu - zostaví sa z už uloženej referencie.
+        print(f"::warning::Referencia ČHMÚ sa neaktualizovala ({type(e).__name__}: {e}), použije sa už uložená")
 
     slots = archive.build_web(ARCHIVE, WEB, REF_STATIONS)
     if slots:

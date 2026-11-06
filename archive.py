@@ -160,6 +160,8 @@ class RefStore:
         by_day = defaultdict(lambda: defaultdict(dict))
         for wsi, values in series.items():
             for dt, temp in values.items():
+                if not isinstance(temp, (int, float)):
+                    continue  # chýbajúce meranie (napríklad prázdny text z ČHMÚ)
                 idx = (int(dt.timestamp()) - day_start(dt.date())) // REF_STEP
                 by_day[dt.date()][wsi][idx] = round(temp * 10)
 
