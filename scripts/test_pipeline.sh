@@ -77,7 +77,7 @@ check "snímky v archíve sa nezmenili" '[ "$(data_files | grep "^slots/" | sort
 check "web je stále kompletný" '[ "$(index_slots)" = 3 ]'
 
 echo "== kontrola kvality nesmie zastaviť publikovanie"
-check "qc.py s malou sieťou nič nezapíše" '(RSCRIPT=/neexistuje "$PYTHON" qc.py > /dev/null 2>&1 || true); [ ! -d archive/qc ]'
+check "qc.py s malou sieťou nezapíše žiadne príznaky (najviac značku preskočenia)" '(RSCRIPT=/neexistuje "$PYTHON" qc.py > /dev/null 2>&1 || true); ! grep -rlq "\"f\"" archive/qc 2>/dev/null'
 check "qc.py --pending nepotrebuje R a skončí kódom 0" 'RSCRIPT=/neexistuje "$PYTHON" qc.py --pending > /dev/null 2>&1'
 run_pipeline
 check "web sa publikuje aj bez príznakov kvality" '[ "$(index_slots)" = 3 ]'

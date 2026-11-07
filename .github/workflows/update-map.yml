@@ -71,44 +71,6 @@ jobs:
         id: restore
         run: bash scripts/pull_data.sh
 
-      # Kontrola kvality CrowdQC+ (R) beží len vtedy, keď je uzavretý deň bez súboru kontroly (zhruba raz denne);
-      # R sa dovtedy neinštaluje. Krok je neblokujúci - pri chybe sa web publikuje bez príznakov kvality.
-      - name: Check pending quality control
-        id: qc_pending
-        continue-on-error: true
-        run: python qc.py --pending
-
-      - name: Set up R
-        if: steps.qc_pending.outputs.pending == 'true'
-        uses: r-lib/actions/setup-r@v2
-        with:
-          use-public-rspm: true
-
-      - name: Cache R packages
-        if: steps.qc_pending.outputs.pending == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.r-lib
-          key: r-lib-${{ runner.os }}-${{ hashFiles('scripts/install_r_deps.R') }}
-
-      - name: Install R packages
-        if: steps.qc_pending.outputs.pending == 'true'
-        continue-on-error: true
-        env:
-          R_LIBS_USER: ${{ github.workspace }}/.r-lib
-        run: |
-          mkdir -p "$R_LIBS_USER"
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libgdal-dev libgeos-dev libproj-dev libudunits2-dev
-          Rscript scripts/install_r_deps.R
-
-      - name: Quality control
-        if: steps.qc_pending.outputs.pending == 'true'
-        continue-on-error: true
-        env:
-          R_LIBS_USER: ${{ github.workspace }}/.r-lib
-        run: python qc.py
-
       - name: Fetch data and build site files
         env:
           NETATMO_CLIENT_ID: ${{ secrets.NETATMO_CLIENT_ID }}
@@ -132,6 +94,59 @@ jobs:
               echo "Refresh token sa zmenil a bol uložený."
             fi
           fi
+
+      # Kontrola kvality CrowdQC+ (R) beží až po stiahnutí snímky (nezdržuje ju) a len vtedy, keď je uzavretý
+      # deň bez súboru kontroly (zhruba raz denne); R sa dovtedy neinštaluje. Všetky kroky sú neblokujúce -
+      # pri chybe sa web publikuje bez príznakov kvality a ďalší beh to skúsi znova. Príznaky sa na webe
+      # objavia pri najbližšom prebudovaní (do hodiny).
+      - name: Check pending quality control
+        id: qc_pending
+        continue-on-error: true
+        run: python qc.py --pending
+
+      - name: Set up R
+        id: setup_r
+        if: steps.qc_pending.outputs.pending == 'true'
+        continue-on-error: true
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Restore R packages cache
+        id: r_cache
+        if: steps.qc_pending.outputs.pending == 'true' && steps.setup_r.outcome == 'success'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.r-lib
+          key: r-lib-${{ runner.os }}-R${{ steps.setup_r.outputs.installed-r-version }}-${{ hashFiles('scripts/install_r_deps.R') }}
+
+      - name: Install R packages
+        id: r_deps
+        if: steps.qc_pending.outputs.pending == 'true' && steps.setup_r.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          R_LIBS_USER: ${{ github.workspace }}/.r-lib
+        run: |
+          mkdir -p "$R_LIBS_USER"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgdal-dev libgeos-dev libproj-dev libudunits2-dev
+          Rscript scripts/install_r_deps.R
+
+      - name: Save R packages cache
+        if: steps.r_deps.outcome == 'success' && steps.r_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.r-lib
+          key: r-lib-${{ runner.os }}-R${{ steps.setup_r.outputs.installed-r-version }}-${{ hashFiles('scripts/install_r_deps.R') }}
+
+      - name: Quality control
+        if: steps.r_deps.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          R_LIBS_USER: ${{ github.workspace }}/.r-lib
+        run: python qc.py
 
       # Archív sa uloží aj vtedy, keď po stiahnutí snímky zlyhal niektorý z ďalších krokov.
       - name: Save archive

@@ -147,6 +147,10 @@ class QcStoreTest(TempDirTest):
     def test_flags_none_when_no_file(self):
         self.assertIsNone(archive.QcStore(self.base).flags(T0))
 
+    def test_skipped_marker_means_not_checked(self):
+        archive.write_json(self.base / "qc" / "2026-11-01.json", {"ver": 1, "day": "2026-11-01", "skipped": "x"})
+        self.assertIsNone(archive.QcStore(self.base).flags(T0))
+
     def test_flags_map_row_to_level(self):
         archive.write_json(self.base / "qc" / "2026-11-01.json", {"ver": 1, "f": {str(T0): [[4, "m5"]]}})
         store = archive.QcStore(self.base)

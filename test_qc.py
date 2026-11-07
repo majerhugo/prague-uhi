@@ -100,9 +100,10 @@ class ImportTest(TempDirTest):
 
 
 class RunDayTest(TempDirTest):
-    def test_run_day_without_rscript_returns_false(self):
+    def test_run_day_with_unusable_rscript_returns_false_and_writes_nothing(self):
         day = date(2026, 11, 1)
-        self.add_slot(ts(day, 0), {"a": (10.0, 50.0, 14.4)})
+        for h in range(24):                            # dosť staníc a hodín, aby sa R skutočne spúšťalo
+            self.add_slot(ts(day, h), {f"s{i}": (10.0, 50.0 + i * 0.001, 14.4) for i in range(100)})
         self.assertFalse(qc.run_day(self.base, day, rscript=["/nonexistent/Rscript"]))
         self.assertFalse(qc.qc_path(self.base, day).exists())
 
@@ -112,10 +113,12 @@ class ScheduleTest(TempDirTest):
         for d in (1, 2, 3):
             self.add_slot(ts(date(2026, 11, d), 5), {"a": (10.0, 50.0, 14.4)})
 
-    def run_main(self, *args):
+    NOW = ts(date(2026, 11, 5), 12)
+
+    def run_main(self, *args, now=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = qc.main([*args, "--archive", str(self.base)])
+            code = qc.main([*args, "--archive", str(self.base)], now=now or self.NOW)
         return code, out.getvalue()
 
     def test_closed_days_excludes_today_and_checked(self):
@@ -135,6 +138,34 @@ class ScheduleTest(TempDirTest):
             code, out = self.run_main("--pending")
         self.assertEqual((code, out.strip()), (0, "pending=true"))
         self.assertEqual(gh.read_text(encoding="utf-8").splitlines(), ["pending=false", "pending=true"])
+
+    def test_closed_days_only_recent_window(self):
+        self.add_slot(ts(date(2026, 10, 1), 5), {"a": (10.0, 50.0, 14.4)})
+        self.add_slot(ts(date(2026, 11, 2), 5), {"a": (10.0, 50.0, 14.4)})
+        self.assertEqual(qc.closed_days(self.base, now=ts(date(2026, 11, 4), 12)), [date(2026, 11, 2)])
+
+    def test_closed_days_waits_one_hour_after_midnight(self):
+        self.add_slot(ts(date(2026, 11, 2), 5), {"a": (10.0, 50.0, 14.4)})
+        self.assertEqual(qc.closed_days(self.base, now=ts(date(2026, 11, 3), 0) + 1800), [])
+        self.assertEqual(qc.closed_days(self.base, now=ts(date(2026, 11, 3), 1) + 60), [date(2026, 11, 2)])
+
+    def test_skipped_day_writes_marker_and_is_not_pending_again(self):
+        day = date(2026, 11, 2)
+        self.add_slot(ts(day, 5), {"a": (10.0, 50.0, 14.4)})
+        self.assertFalse(qc.run_day(self.base, day, rscript=["/nonexistent/Rscript"]))
+        marker = archive.read_json(qc.qc_path(self.base, day))
+        self.assertIn("skipped", marker)
+        self.assertNotIn("f", marker)
+        self.assertEqual(qc.closed_days(self.base, now=ts(date(2026, 11, 4), 12)), [])
+        self.assertIsNone(archive.QcStore(self.base).flags(ts(day, 5)))
+
+    def test_main_processes_at_most_two_days_newest_first(self):
+        for d in (2, 3, 4):
+            self.add_slot(ts(date(2026, 11, d), 5), {"a": (10.0, 50.0, 14.4)})
+        calls = []
+        with mock.patch.object(qc, "find_rscript", return_value=["R"]),                 mock.patch.object(qc, "run_day", side_effect=lambda b, d, r: calls.append(d) or True):
+            code, _ = self.run_main(now=ts(date(2026, 11, 5), 12))
+        self.assertEqual((code, calls), (0, [date(2026, 11, 4), date(2026, 11, 3)]))
 
     def test_nothing_to_do_returns_0_without_rscript(self):
         with mock.patch.object(qc, "find_rscript", return_value=None):
@@ -250,10 +281,12 @@ class RIntegrationTest(TempDirTest):
         data, _ = self.flags(rows)
         self.assertEqual(data["day"], "2026-11-14")
 
-    def test_too_few_stations_writes_nothing(self):
+    def test_too_few_stations_writes_skip_marker_only(self):
         self.build_network(n_regular=10)
         self.assertFalse(qc.run_day(self.base, LAST_DAY))
-        self.assertFalse(qc.qc_path(self.base, LAST_DAY).exists())
+        marker = archive.read_json(qc.qc_path(self.base, LAST_DAY))
+        self.assertIn("skipped", marker)
+        self.assertNotIn("f", marker)
 
 
 if __name__ == "__main__":

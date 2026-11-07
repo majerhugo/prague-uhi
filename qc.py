@@ -24,6 +24,8 @@ import archive
 ARCHIVE = Path("archive")
 WINDOW_DAYS = 30
 MIN_HOURS = 24            # stanica s menej platnými hodinami v okne sa nekontroluje (ostáva zobrazená)
+CLOSED_WINDOW_DAYS = 3     # dni spätne, pre ktoré sa kontrola automaticky dopočítava (staršie len --day/--recompute)
+MAX_DAYS_PER_RUN = 2      # najviac toľko dní za jeden beh (najnovšie prvé), aby krok netrval dlho
 MIN_STATIONS = 100        # pod touto sieťou sú m2/m4 nespoľahlivé (varuje aj balík), deň sa nezapíše
 CENTER = (50.0875, 14.4214)   # Staromestské námestie
 PACKAGE_VERSION = "1.1.2"
@@ -116,7 +118,10 @@ def run_day(base, day, rscript=None):
         src, out = Path(tmp) / "in.csv", Path(tmp) / "out.csv"
         checked, unchecked = _export(base, day, src)
         if checked < MIN_STATIONS:
+            reason = f"too few stations ({checked} < {MIN_STATIONS})"
             print(f"  {day:%Y-%m-%d}: málo staníc na kontrolu ({checked} < {MIN_STATIONS}), preskočené")
+            # značka, aby sa deň, ktorý sa nedá skontrolovať, nepovažoval za čakajúci pri každom behu
+            archive.write_json(qc_path(base, day), {"ver": 1, "day": f"{day:%Y-%m-%d}", "skipped": reason})
             return False
         try:
             res = subprocess.run([*rscript, str(R_SCRIPT), str(src), str(out)],
@@ -135,9 +140,10 @@ def run_day(base, day, rscript=None):
 
 
 def _days_with_slots(base, now=None):
-    """UTC dni, ktoré majú aspoň jednu snímku a sú uzavreté (pred dnešným UTC dňom)."""
+    """UTC dni, ktoré majú aspoň jednu snímku a sú uzavreté: deň sa uzavrie hodinu po polnoci UTC,
+    aby doň ešte stihla pribudnúť neskoro stiahnutá snímka poslednej hodiny."""
     now = int(datetime.now(timezone.utc).timestamp()) if now is None else now
-    today = archive.utc(now).date()
+    today = archive.utc(now - archive.HOUR).date()
     days = []
     for d in (Path(base) / "slots").glob("*"):
         if d.is_dir() and any(d.glob("*.json")):
@@ -151,8 +157,10 @@ def _days_with_slots(base, now=None):
 
 
 def closed_days(base, now=None):
-    """Uzavreté UTC dni so snímkou, pre ktoré ešte nie je súbor kontroly."""
-    return [d for d in _days_with_slots(base, now) if not qc_path(base, d).exists()]
+    """Uzavreté UTC dni z posledných CLOSED_WINDOW_DAYS dní, pre ktoré ešte nie je súbor kontroly."""
+    now = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    oldest = archive.utc(now - archive.HOUR).date() - timedelta(days=CLOSED_WINDOW_DAYS)
+    return [d for d in _days_with_slots(base, now) if d >= oldest and not qc_path(base, d).exists()]
 
 
 def report(base, center=CENTER, near_km=3.0, far_km=8.0):
@@ -172,6 +180,8 @@ def report(base, center=CENTER, near_km=3.0, far_km=8.0):
     failed = dict(total)
     for path in days:
         data = archive.read_json(path)
+        if "f" not in data:
+            continue                      # deň označený ako preskočený
         day = date.fromisoformat(data["day"])
         for slot_path in sorted((base / "slots" / f"{day:%Y-%m-%d}").glob("*.json")):
             slot = archive.read_json(slot_path)
@@ -200,7 +210,7 @@ def report(base, center=CENTER, near_km=3.0, far_km=8.0):
     ])
 
 
-def main(argv=None):
+def main(argv=None, now=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--archive", default=str(ARCHIVE), help="adresár archívu (predvolene archive)")
     parser.add_argument("--pending", action="store_true",
@@ -216,7 +226,7 @@ def main(argv=None):
         return 0
 
     if args.pending:
-        line = f"pending={'true' if closed_days(base) else 'false'}"
+        line = f"pending={'true' if closed_days(base, now) else 'false'}"
         print(line)
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
@@ -226,9 +236,9 @@ def main(argv=None):
     if args.day:
         days = [date.fromisoformat(args.day)]
     elif args.recompute:
-        days = _days_with_slots(base)
+        days = _days_with_slots(base, now)
     else:
-        days = closed_days(base)
+        days = closed_days(base, now)[::-1][:MAX_DAYS_PER_RUN]
     if not days:
         print("Kontrola kvality: nie je čo počítať")
         return 0

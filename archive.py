@@ -198,8 +198,8 @@ class QcStore:
     def flags(self, slot):
         """{riadok registra: úroveň, ktorú stanica neprešla} pre snímku; None, ak deň nie je skontrolovaný."""
         data = self.day(utc(slot).date())
-        if data is None:
-            return None
+        if data is None or "f" not in data:
+            return None                   # deň nemá kontrolu (chýba súbor, alebo je len značka preskočenia)
         return {int(row): level for row, level in data["f"].get(str(slot), [])}
 
 
