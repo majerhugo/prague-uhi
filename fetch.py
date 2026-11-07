@@ -10,6 +10,7 @@ termíny, ktoré potrebuje.
 Použitie:
     python fetch.py            # stiahne snímku Netatmo, doplní referenciu ČHMÚ a prebuduje web
     python fetch.py --no-fetch # bez sťahovania z Netatmo (doplní referenciu a prebuduje web)
+    python fetch.py --no-fetch --backfill-chmi  # jednorazovo doplní históriu ČHMÚ od prvej snímky
 """
 import argparse
 import json
@@ -43,7 +44,20 @@ CHMI_STATIONS = {
     "0-20000-0-11567": {"name": "Praha-Kbely", "lat": 50.123333, "lon": 14.538056, "alt": 284.5},
 }
 REF_STATIONS = [{"id": wsi, **st} for wsi, st in CHMI_STATIONS.items()]
+
+# Mestské stanice ČHMÚ v Prahe: zobrazujú sa na mape s vlastným UHI. Břevnov nemá v otvorených
+# dátach teplotu (len zrážky), Klementinum má dve stanice, berie sa štandardná 11514.
+CHMI_CITY_STATIONS = {
+    "0-203-0-11514": {"name": "Praha-Klementinum", "lat": 50.086634, "lon": 14.416923, "alt": 190.7},
+    "0-20000-0-11519": {"name": "Praha-Karlov", "lat": 50.069167, "lon": 14.427778, "alt": 260.5},
+    "0-203-0-11201020001": {"name": "Praha-Vinohrady (Flora)", "lat": 50.07584, "lon": 14.46186, "alt": 280.0},
+    "0-20000-0-11520": {"name": "Praha-Libuš", "lat": 50.007778, "lon": 14.446944, "alt": 302.04},
+    "0-203-0-10904013001": {"name": "Praha-Komořany", "lat": 49.9886, "lon": 14.40636, "alt": 213.0},
+}
+CITY_STATIONS = [{"id": wsi, **st} for wsi, st in CHMI_CITY_STATIONS.items()]
+ALL_CHMI_STATIONS = {**CHMI_STATIONS, **CHMI_CITY_STATIONS}
 CHMI_DAYS = 3                # ČHMÚ drží v "now" dnešok a dva predchádzajúce dni
+CHMI_RECENT = "https://opendata.chmi.cz/meteorology/climate/recent/data/10min"  # archív roka
 
 
 def load_boundary():
@@ -201,7 +215,7 @@ def fetch_chmi_series():
     """{wsi: {čas (UTC): °C}} z 10-min. dát ČHMÚ (element T) za posledné dni."""
     today = datetime.now(timezone.utc).date()
     series = {}
-    for wsi in CHMI_STATIONS:
+    for wsi in ALL_CHMI_STATIONS:
         series[wsi] = values = {}
         for back in range(CHMI_DAYS):
             day = today - timedelta(days=back)
@@ -212,11 +226,67 @@ def fetch_chmi_series():
     return series
 
 
+def chmi_recent_urls(wsi, first, last, today):
+    """Adresy súborov archívu `recent` ČHMÚ pre dni first..last.
+
+    Ukončené mesiace sú v jednom súbore na mesiac (adresár MM/), aktuálny mesiac v dennom súbore.
+    """
+    urls, months = [], set()
+    day = first
+    while day <= last:
+        if (day.year, day.month) == (today.year, today.month):
+            urls.append(f"{CHMI_RECENT}/10m-{wsi}-{day:%Y%m%d}.json")
+        elif (day.year, day.month) not in months:
+            months.add((day.year, day.month))
+            urls.append(f"{CHMI_RECENT}/{day:%m}/10m-{wsi}-{day:%Y%m}.json")
+        day += timedelta(days=1)
+    return urls
+
+
+def fetch_chmi_recent(wsi, first, last):
+    """{čas (UTC): °C} z archívu `recent` ČHMÚ pre dni first..last (vrátane)."""
+    today = datetime.now(timezone.utc).date()
+    values = {}
+    for url in chmi_recent_urls(wsi, first, last, today):
+        try:
+            r = requests.get(url, timeout=120)
+            if r.status_code != 200:
+                continue
+            parsed = parse_chmi_values(r.json()["data"]["data"]["values"])
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"  {url.rsplit('/', 1)[-1]}: preskočené ({type(e).__name__})", file=sys.stderr)
+            continue
+        values.update({t: v for t, v in parsed.items() if first <= t.date() <= last})
+    return values
+
+
+def backfill_chmi():
+    """Doplní referenciu aj mestské stanice ČHMÚ od prvej snímky v archíve po včerajšok."""
+    slot_days = sorted(p.name for p in (ARCHIVE / "slots").glob("*") if p.is_dir())
+    if not slot_days:
+        print("  archív je prázdny, nie je čo dopĺňať")
+        return
+    first = datetime.strptime(slot_days[0], "%Y-%m-%d").date() - timedelta(days=1)
+    last = datetime.now(timezone.utc).date() - timedelta(days=1)
+    series = {}
+    for wsi, st in ALL_CHMI_STATIONS.items():
+        series[wsi] = fetch_chmi_recent(wsi, first, last)
+        print(f"  {st['name']}: {len(series[wsi])} termínov")
+    changed = archive.RefStore(ARCHIVE).update(series)
+    print(f"  doplnené dni: {len(changed)} (od {first:%d.%m.} do {last:%d.%m.})")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-fetch", action="store_true",
                         help="nesťahovať Netatmo, len doplniť referenciu a prebudovať web")
+    parser.add_argument("--backfill-chmi", action="store_true",
+                        help="jednorazovo doplniť históriu ČHMÚ z archívu recent (od prvej snímky v archíve)")
     args = parser.parse_args()
+
+    if args.backfill_chmi:
+        print("Dopĺňam históriu ČHMÚ z archívu recent…")
+        backfill_chmi()
 
     if not args.no_fetch:
         print("Sťahujem dáta z Netatmo…")
@@ -230,7 +300,7 @@ def main():
         # Chyba pri referencii nesmie zastaviť zverejnenie webu - zostaví sa z už uloženej referencie.
         print(f"::warning::Referencia ČHMÚ sa neaktualizovala ({type(e).__name__}: {e}), použije sa už uložená")
 
-    slots = archive.build_web(ARCHIVE, WEB, REF_STATIONS)
+    slots = archive.build_web(ARCHIVE, WEB, REF_STATIONS, city_stations=CITY_STATIONS)
     if slots:
         print(f"  web: {len(slots)} snímok, od {archive.utc(slots[0]):%d.%m. %H:00} "
               f"do {archive.utc(slots[-1]):%d.%m. %H:00} UTC")

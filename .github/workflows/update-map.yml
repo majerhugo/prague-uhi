@@ -21,6 +21,10 @@ on:
         description: "Stiahnuť novú snímku Netatmo (inak len prepočítať web)"
         type: boolean
         default: true
+      backfill_chmi:
+        description: "Jednorazovo doplniť históriu ČHMÚ (referencia a mestské stanice) z archívu recent"
+        type: boolean
+        default: false
       data_branch:
         description: "Vetva s archívom (na skúšky použi inú než data)"
         type: string
@@ -72,7 +76,7 @@ jobs:
           NETATMO_CLIENT_ID: ${{ secrets.NETATMO_CLIENT_ID }}
           NETATMO_CLIENT_SECRET: ${{ secrets.NETATMO_CLIENT_SECRET }}
           NETATMO_REFRESH_TOKEN: ${{ secrets.NETATMO_REFRESH_TOKEN }}
-        run: python fetch.py ${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }}
+        run: python fetch.py ${{ github.event.inputs.fetch == 'false' && '--no-fetch' || '' }} ${{ github.event.inputs.backfill_chmi == 'true' && '--backfill-chmi' || '' }}
 
       # Netatmo môže pri obnove vydať nový refresh token a starý zneplatniť.
       # Nový sa preto uloží späť do Secrets (beží aj vtedy, keď predošlý krok zlyhal).

@@ -2,7 +2,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import archive
@@ -135,6 +135,14 @@ class ChmiParseTest(unittest.TestCase):
         self.assertEqual(list(fetch.parse_chmi_values(rows).values()), [7.5])
 
 
+class ChmiRecentUrlsTest(unittest.TestCase):
+    def test_closed_month_is_one_file_and_current_month_daily(self):
+        urls = fetch.chmi_recent_urls("W", date(2026, 10, 30), date(2026, 11, 3), date(2026, 11, 7))
+        self.assertEqual(len(urls), 4)
+        self.assertTrue(urls[0].endswith("/10/10m-W-202610.json"))
+        self.assertEqual([u[-13:] for u in urls[1:]], ["20261101.json", "20261102.json", "20261103.json"])
+
+
 class WebTest(TempDirTest):
     def make(self, offsets, ref_terms):
         """Snímka s meraniami v daných posunoch od T0 a referenciou pre zadané termíny."""
@@ -165,6 +173,25 @@ class WebTest(TempDirTest):
         self.assertEqual(old, [T0])
         day = json.loads((self.out / "days" / "2026-11-01.json").read_text(encoding="utf-8"))
         self.assertEqual(day["slots"][0]["r"], [[80, None], [80, None]])
+
+    def test_one_missing_reference_station_does_not_block_publishing(self):
+        self.make([2000, 2200], [])
+        archive.RefStore(self.base).update({"A": {dt(T0 + 1800): 8.0, dt(T0 + 2400): 8.0}})  # B chýba
+        slots = archive.build_web(self.base, self.out, REF_STATIONS, now=T0 + 3600 + 600)
+        self.assertEqual(slots, [T0])
+        day = json.loads((self.out / "days" / "2026-11-01.json").read_text(encoding="utf-8"))
+        self.assertEqual(day["slots"][0]["r"], [[80, 80], [None, None]])
+
+    def test_city_stations_are_added_to_slots_and_index(self):
+        self.make([2000, 2200], [1800, 2400])
+        city = [{"id": "C", "name": "C", "lat": 50.0, "lon": 14.0, "alt": 200}]
+        archive.RefStore(self.base).update({"C": {dt(T0 + 1800): 7.0}})  # v termíne 2400 chýba, nič neblokuje
+        slots = archive.build_web(self.base, self.out, REF_STATIONS, now=T0 + 3600 + 600, city_stations=city)
+        self.assertEqual(slots, [T0])
+        day = json.loads((self.out / "days" / "2026-11-01.json").read_text(encoding="utf-8"))
+        self.assertEqual(day["slots"][0]["c"], [[70, None]])
+        index = json.loads((self.out / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index["city_stations"], city)
 
     def test_empty_archive_builds_empty_index(self):
         self.assertEqual(archive.build_web(self.base, self.out, REF_STATIONS, now=T0), [])

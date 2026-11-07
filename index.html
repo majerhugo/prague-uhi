@@ -26,6 +26,20 @@
     font-size: 11px; font-weight: 600;
   }
 
+  .city-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; box-sizing: border-box;
+    border: 3px solid #111; border-radius: 3px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+    font-size: 11px; font-weight: 700;
+  }
+
+  .sym { display: inline-block; width: 11px; height: 11px; box-sizing: border-box; vertical-align: -1px; margin-right: 5px; }
+  .sym.netatmo { background: #f4a582; border: 1px solid rgba(0, 0, 0, .35); border-radius: 50%; }
+  .sym.city { background: #f4a582; border: 2px solid #111; border-radius: 2px; }
+  .sym.ref { background: #222; border: 1px solid #fff; border-radius: 2px; box-shadow: 0 0 0 1px #888; }
+  .symbols { font-size: 12px; margin-top: 6px; line-height: 1.6; }
+
   .panel {
     background: #fff; padding: 10px 12px; border-radius: 6px;
     box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
@@ -124,6 +138,16 @@ const refIcon = temp => L.divIcon({
   html: `<div class="ref-marker">${temp.toFixed(1)}°</div>`,
 });
 
+// mestská stanica ČHMÚ: štvorec farbou UHI s hrubým čiernym rámom (Netatmo sú kruhy)
+function cityIcon(uhi) {
+  const textColor = uhi >= 3.5 || uhi <= -1.5 ? "#fff" : "#111";
+  return L.divIcon({
+    className: "",
+    iconSize: [40, 26],
+    html: `<div class="city-marker" style="background:${color(uhi)};color:${textColor}">${fmt(uhi)}</div>`,
+  });
+}
+
 const map = L.map("map").setView([50.0755, 14.4378], 11);
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -141,9 +165,11 @@ info.addTo(map);
 const panel = info.getContainer();
 
 const urban = L.layerGroup().addTo(map);
+const city = L.layerGroup().addTo(map);
 const reference = L.layerGroup().addTo(map);
 L.control.layers(null, {
   "Netatmo stations (UHI intensity)": urban,
+  "CHMI stations (UHI intensity)": city,
   "CHMI reference stations": reference,
 }, { position: "topleft" }).addTo(map);
 
@@ -224,9 +250,17 @@ function popupHtml(p) {
       Elevation: ${p.alt} m a.s.l.<br>
       Observed: ${fmtTime(p.time)}`;
   }
+  if (p.role === "city") {
+    return `<b>UHI intensity: ${fmt(p.uhi)} °C</b><br>
+      <b>${p.name}</b> (CHMI station)<br>
+      Air temperature: ${p.temp.toFixed(1)} °C<br>
+      CHMI reference: ${p.ref.toFixed(1)} °C${p.refNote || ""}<br>
+      Elevation: ${p.alt} m a.s.l.<br>
+      Observed: ${fmtTime(p.time)}`;
+  }
   return `<b>UHI intensity: ${fmt(p.uhi)} °C</b><br>
     Air temperature: ${p.temp.toFixed(1)} °C<br>
-    CHMI reference: ${p.ref.toFixed(1)} °C at ${fmtHM(p.refTime)}<br>
+    CHMI reference: ${p.ref.toFixed(1)} °C${p.refNote || ""} at ${fmtHM(p.refTime)}<br>
     ${p.alt != null ? `Elevation: ${p.alt} m a.s.l.<br>` : ""}
     Observed: ${fmtTime(p.time)}<br>
     <span style="color:#888">Netatmo station ${p.id}</span>`;
@@ -242,12 +276,16 @@ function setPanel(body) {
     <div class="legend-bar" style="background:linear-gradient(to right,${gradient})"></div>
     <div class="legend-scale">${STOPS.map(([v]) => `<span>${fmt(v)}</span>`).join("")}</div>
     <div class="muted" style="text-align:center">UHI intensity (°C)</div>
+    <div class="symbols"><span class="sym netatmo"></span>Netatmo station<br>
+    <span class="sym city"></span>CHMI station (UHI)<br>
+    <span class="sym ref"></span>CHMI reference station (temperature)</div>
     <div class="muted" style="margin-top:6px">Updated: ${fmtTime(Date.parse(index.generated) / 1000)}<br>
     Data: Netatmo public weather stations; Czech Hydrometeorological Institute (CHMI) open data</div>`;
 }
 
 function clearMap() {
   urban.clearLayers();
+  city.clearLayers();
   reference.clearLayers();
   markers.length = 0;
 }
@@ -261,28 +299,32 @@ function renderGap(epoch, reason) {
 function renderSlot(slot) {
   clearMap();
   const names = index.ref_stations.map(s => s.name);
-  // referencia = priemer všetkých referenčných staníc; ak niektorej chýba hodnota, stanica sa nezobrazí
+  // referencia = priemer dostupných referenčných staníc; ak niektorej chýba hodnota, použije sa druhá
   const refAt = term => {
     const k = (term - slot.r0) / REF_STEP;
-    let sum = 0;
-    for (const row of slot.r) {
-      if (row[k] == null) return null;
-      sum += row[k];
-    }
-    return sum / slot.r.length / 10;
+    const used = [], vals = [];
+    slot.r.forEach((row, n) => {
+      if (row[k] != null) {
+        vals.push(row[k]);
+        used.push(names[n].replace(/^Praha-/, ""));
+      }
+    });
+    return vals.length ? { value: vals.reduce((a, b) => a + b, 0) / vals.length / 10, used } : null;
   };
+  const partialNote = r => (r.used.length < names.length ? ` (${r.used.join(", ")} only)` : "");
 
   const stamps = slot.o.map(o => slot.base + o);
   const sorted = [...stamps].sort((a, b) => a - b);
   const median = sorted[sorted.length >> 1];
-  let shown = 0, missing = 0;
+  let shown = 0, missing = 0, partial = 0;
   slot.i.forEach((row, j) => {
     const [mac, lat, lon, alt] = registry[row];
     const refTime = nearestTerm(stamps[j]);
-    const ref = refAt(refTime);
-    if (ref == null) { missing++; return; }
+    const r = refAt(refTime);
+    if (r == null) { missing++; return; }
+    if (r.used.length < names.length) partial++;
     const temp = slot.t[j] / 10;
-    const p = { id: mac, alt, temp, ref, refTime, uhi: temp - ref, time: stamps[j] };
+    const p = { id: mac, alt, temp, ref: r.value, refNote: partialNote(r), refTime, uhi: temp - r.value, time: stamps[j] };
     const mk = L.marker([lat, lon], { icon: makeIcon(p.uhi, labelled) }).bindPopup(popupHtml(p));
     mk.uhi = p.uhi;
     markers.push(mk);
@@ -301,13 +343,26 @@ function renderSlot(slot) {
   });
   const refMean = refAt(medTerm);
 
+  // mestské stanice ČHMÚ: UHI v 10-min. termíne najbližšom k mediánu času meraní Netatmo
+  (index.city_stations || []).forEach((st, n) => {
+    const v = slot.c?.[n]?.[k];
+    if (v == null || !refMean) return;
+    const temp = v / 10;
+    const uhi = temp - refMean.value;
+    L.marker([st.lat, st.lon], { icon: cityIcon(uhi), zIndexOffset: 900 })
+      .bindPopup(popupHtml({ role: "city", name: st.name, temp, alt: st.alt, uhi,
+                             ref: refMean.value, refNote: partialNote(refMean), time: medTerm }))
+      .addTo(city);
+  });
+
   setPanel(`<b>${fmtTime(median)}</b>
     <div class="muted">median time of Netatmo observations</div>
-    <p class="formula">UHI intensity = air temperature in the city (Netatmo stations) −
+    <p class="formula">UHI intensity = air temperature in the city (Netatmo and CHMI stations) −
     air temperature outside the city (mean of CHMI stations ${names.join(" and ")})</p>
     <b>Netatmo:</b> ${shown} stations, observed ${fmtHM(sorted[0])}–${fmtHM(sorted.at(-1))}<br>
-    <b>CHMI reference:</b> ${refMean == null ? "n/a" : `${refMean.toFixed(1)} °C at ${fmtHM(medTerm)}`}
-    ${missing ? `<div class="warn">${missing} stations without a reference value are not shown.</div>` : ""}`);
+    <b>CHMI reference:</b> ${refMean == null ? "n/a" : `${refMean.value.toFixed(1)} °C at ${fmtHM(medTerm)}${partialNote(refMean)}`}
+    ${missing ? `<div class="warn">${missing} stations without a reference value are not shown.</div>` : ""}
+    ${partial ? `<div class="warn">For ${partial} stations the reference uses only the available CHMI station.</div>` : ""}`);
 }
 
 function buildTicks(hours) {

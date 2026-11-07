@@ -182,22 +182,29 @@ class RefStore:
 
 # --- Súbory pre web ----------------------------------------------------------------
 
-def web_slot(slot, refs, ref_ids, now):
-    """Snímka pre web: pridá referenčné teploty pre 10-min. termíny, ktoré snímka používa.
+def web_slot(slot, refs, ref_ids, now, city_ids=()):
+    """Snímka pre web: pridá teploty ČHMÚ pre 10-min. termíny, ktoré snímka používa.
 
-    Vráti None, kým ČHMÚ nezverejní všetky potrebné termíny (a snímka nie je dosť stará).
+    "r" = referenčné stanice, "c" = mestské stanice ČHMÚ (v poradí zadaných identifikátorov).
+    Referencia je priemer dostupných referenčných staníc, takže stačí, ak má každý termín aspoň
+    jednu z nich. Vráti None, kým to ČHMÚ nezverejní (a snímka nie je dosť stará). Ak chýbajúcu
+    hodnotu ČHMÚ neskôr doplní, ďalší prepočet webu ju použije.
     """
     first = nearest_term(slot["base"] + min(slot["o"]))
     last = nearest_term(slot["base"] + max(slot["o"]))
-    ref = [[refs.get(wsi, t) for t in range(first, last + 1, REF_STEP)] for wsi in ref_ids]
-    complete = all(v is not None for row in ref for v in row)
+    terms = range(first, last + 1, REF_STEP)
+    ref = [[refs.get(wsi, t) for t in terms] for wsi in ref_ids]
+    complete = all(any(row[k] is not None for row in ref) for k in range(len(terms)))
     if not complete and now - slot["slot"] < REF_GRACE_H * HOUR:
         return None
-    return {"slot": slot["slot"], "base": slot["base"], "i": slot["i"], "t": slot["t"],
-            "o": slot["o"], "r0": first, "r": ref}
+    out = {"slot": slot["slot"], "base": slot["base"], "i": slot["i"], "t": slot["t"],
+           "o": slot["o"], "r0": first, "r": ref}
+    if city_ids:
+        out["c"] = [[refs.get(wsi, t) for t in terms] for wsi in city_ids]
+    return out
 
 
-def build_web(base, out, ref_stations, now=None):
+def build_web(base, out, ref_stations, now=None, city_stations=()):
     """Z archívu vyrobí index.json, registry.json a days/RRRR-MM-DD.json. Vráti termíny snímok."""
     base, out = Path(base), Path(out)
     now = int(datetime.now(timezone.utc).timestamp()) if now is None else now
@@ -205,10 +212,11 @@ def build_web(base, out, ref_stations, now=None):
     registry = read_json(registry_file) if registry_file.exists() else {"ver": 1, "rows": []}
     refs = RefStore(base)
     ref_ids = [s["id"] for s in ref_stations]
+    city_ids = [s["id"] for s in city_stations]
 
     days = defaultdict(list)
     for path in sorted((base / "slots").glob("*/*.json")):
-        slot = web_slot(read_json(path), refs, ref_ids, now)
+        slot = web_slot(read_json(path), refs, ref_ids, now, city_ids)
         if slot:
             days[f"{utc(slot['slot']):%Y-%m-%d}"].append(slot)
 
@@ -221,5 +229,6 @@ def build_web(base, out, ref_stations, now=None):
     slots = sorted(s["slot"] for day in days.values() for s in day)
     write_json(out / "registry.json", registry)
     write_json(out / "index.json", {"ver": 1, "generated": iso(utc(now)), "step": HOUR,
-                                    "ref_stations": ref_stations, "slots": slots})
+                                    "ref_stations": ref_stations, "city_stations": list(city_stations),
+                                    "slots": slots})
     return slots
