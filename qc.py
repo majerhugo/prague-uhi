@@ -1,6 +1,6 @@
 """Kontrola kvality Netatmo dát metódou CrowdQC+ (Fenner a kol., 2021) nad archívom.
 
-Pre uzavretý UTC deň vyexportuje 30-dňové okno do CSV, spustí originálny R balík CrowdQCplus (qc.R)
+Pre uzavretý UTC deň vyexportuje 20-dňové okno do CSV, spustí originálny R balík CrowdQCplus (qc.R)
 a príznaky zapíše do archive/qc/RRRR-MM-DD.json. Archív ostáva surový, príznaky sa len pridávajú.
 Súbor dňa má tvar: {"ver","day","window_days","min_hours","package","checked","unchecked",
 "f": {"<hodina snímky, epoch s>": [[riadok registra, "m1".."m5"], ...]}}; dôvod = prvá úroveň,
@@ -22,7 +22,7 @@ from pathlib import Path
 import archive
 
 ARCHIVE = Path("archive")
-WINDOW_DAYS = 30
+WINDOW_DAYS = 20
 MIN_HOURS = 24            # stanica s menej platnými hodinami v okne sa nekontroluje (ostáva zobrazená)
 CLOSED_WINDOW_DAYS = 3     # dni spätne, pre ktoré sa kontrola automaticky dopočítava (staršie len --day/--recompute)
 MAX_DAYS_PER_RUN = 2      # najviac toľko dní za jeden beh (najnovšie prvé), aby krok netrval dlho

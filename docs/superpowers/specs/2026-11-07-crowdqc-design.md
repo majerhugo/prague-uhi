@@ -44,9 +44,9 @@ Parametre sú konštanty na jednom mieste v `qc.R`, aby sa dali ladiť.
 
 ## 4. Okno a načasovanie
 
-- **Okno = 30 dní** končiacich uzatváraným dňom (zatiaľ menej, kým archív nemá 30 dní).
-  Autori odporúčajú 7 dní až 1 mesiac, pre takmer reálny čas ~14 dní; 30 dní zvolené kvôli stabilnej
-  korelácii v m4, hodnota je konštanta.
+- **Okno = 20 dní** končiacich uzatváraným dňom (zatiaľ menej, kým archív nemá 20 dní).
+  Autori odporúčajú 7 dní až 1 mesiac, pre takmer reálny čas ~14 dní; 20 dní zvolené ako kompromis medzi rýchlou reakciou a stabilnou
+  korelaciou v m4; hodnota je konštanta.
 - Deň sa uzatvára **po skončení UTC dňa**: pri prvom hodinovom behu po 00:00 UTC pre každý deň bez
   súboru kontroly sa vypočíta a zapíše natrvalo. Zapísaný deň sa už nemení.
 - m1, m3, m4 rozhodujú o stanici za celé okno; m2 a m5 označujú jednotlivé hodiny.
@@ -76,7 +76,7 @@ V archíve (vetva `data`), append-only, jeden súbor na deň: `qc/YYYY-MM-DD.jso
 - Krok je **neblokujúci**: pri zlyhaní `::warning::` a pokračuje sa, mapa sa publikuje bez kontroly
   pre dotknutý deň. Chýbajúci súbor sa doplní pri ďalšom behu.
 - Hodinové behy nemajú R nainštalované, kým nie je čo počítať (cca 1 beh z 24).
-- Limit `timeout-minutes: 30` ostáva; m5 pri 30 dňoch a stovkách staníc má bežať v minútach.
+- Limit `timeout-minutes: 30` ostáva; m5 pri 20 dňoch a stovkách staníc má bežať v minútach.
 
 ## 7. Web
 
@@ -85,7 +85,7 @@ V archíve (vetva `data`), append-only, jeden súbor na deň: `qc/YYYY-MM-DD.jso
 - `index.html`: označené stanice predvolene **skryté**; prepínač vrstvy „Stations that failed QC“
   ich ukáže šedo; popup uvedie dôvod. Označené stanice sa nezapočítavajú do štatistík panelu.
 - Pri neuzavretom dni (bez súboru kontroly) panel ukáže „preliminary, not yet quality-checked“.
-- Text metódy v paneli (anglicky): kontrola CrowdQC+, hodinové okamžité hodnoty, 30-dňové okno.
+- Text metódy v paneli (anglicky): kontrola CrowdQC+, hodinové okamžité hodnoty, 20-dňové okno.
 
 ## 8. Testy a overenie
 

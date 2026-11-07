@@ -55,10 +55,10 @@ class ExportTest(TempDirTest):
             rows = list(csv.DictReader(f))
         self.assertEqual(list(rows[0].keys()), ["p_id", "time", "ta", "lon", "lat", "z"])
         times = [int(r["time"]) for r in rows]
-        self.assertEqual(min(times), ts(date(2026, 10, 5), 0))      # okno = 30 dní končiacich 3.11.
+        self.assertEqual(min(times), ts(date(2026, 10, 15), 0))     # okno = 20 dní končiacich 3.11.
         self.assertEqual(max(times), ts(day, 23))
         first = [r for r in rows if r["p_id"] == "0"][0]
-        self.assertEqual(float(first["ta"]), 10.0 + (ts(date(2026, 10, 5), 0) - ts(date(2026, 10, 1), 0)) // HOUR % 5)
+        self.assertEqual(float(first["ta"]), 10.0 + (ts(date(2026, 10, 15), 0) - ts(date(2026, 10, 1), 0)) // HOUR % 5)
 
     def test_export_skips_stations_with_few_hours(self):
         day = date(2026, 11, 1)

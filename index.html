@@ -390,7 +390,7 @@ function renderSlot(slot) {
     ${slot.q === undefined
       ? `<div class="warn">Preliminary: not yet quality-checked (CrowdQC+ is applied after the day ends).</div>`
       : `<br><b>Failed QC:</b> ${qcFailed} stations (hidden)`}
-    <div class="muted">Quality control: CrowdQC+ (hourly snapshots, 30-day window).</div>
+    <div class="muted">Quality control: CrowdQC+ (hourly snapshots, 20-day window).</div>
     ${missing ? `<div class="warn">${missing} stations without a reference value are not shown.</div>` : ""}
     ${partial ? `<div class="warn">For ${partial} stations the reference uses only the available CHMI station.</div>` : ""}`);
 }
