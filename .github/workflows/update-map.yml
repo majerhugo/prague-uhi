@@ -128,10 +128,18 @@ jobs:
         env:
           R_LIBS_USER: ${{ github.workspace }}/.r-lib
         run: |
+          set -o pipefail
           mkdir -p "$R_LIBS_USER"
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libgdal-dev libgeos-dev libproj-dev libudunits2-dev
-          Rscript scripts/install_r_deps.R
+          {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libgdal-dev libgeos-dev libproj-dev libudunits2-dev
+            Rscript scripts/install_r_deps.R
+          } 2>&1 | tee r-install.log || {
+            # koniec logu ako anotácia, aby chyba bola vidieť aj bez prihlásenia a otvárania logov
+            echo "::error::R install failed: $(tail -n 12 r-install.log | tr '
+' ' ' | cut -c1-900)"
+            exit 1
+          }
 
       - name: Save R packages cache
         if: steps.r_deps.outcome == 'success' && steps.r_cache.outputs.cache-hit != 'true'
