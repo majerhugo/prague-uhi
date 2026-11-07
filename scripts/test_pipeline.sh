@@ -17,7 +17,7 @@ ident=(-c user.name=test -c user.email=test@example.com)
 work="$T/work"
 mkdir -p "$work/data"
 cp -r "$SRC/scripts" "$work/"
-cp "$SRC"/*.py "$SRC/index.html" "$work/"
+cp "$SRC"/*.py "$SRC/qc.R" "$SRC/index.html" "$work/"
 cp "$SRC/data/praha.geojson" "$work/data/"
 cd "$work"
 git init -q -b main   # aby fungovali git príkazy v skriptoch ako v checkoute
@@ -75,6 +75,12 @@ echo "== beh 2 (archív aj web už existujú)"
 run_pipeline
 check "snímky v archíve sa nezmenili" '[ "$(data_files | grep "^slots/" | sort | tr "\n" " ")" = "$slots_before" ]'
 check "web je stále kompletný" '[ "$(index_slots)" = 3 ]'
+
+echo "== kontrola kvality nesmie zastaviť publikovanie"
+check "qc.py s malou sieťou nič nezapíše" '(RSCRIPT=/neexistuje "$PYTHON" qc.py > /dev/null 2>&1 || true); [ ! -d archive/qc ]'
+check "qc.py --pending nepotrebuje R a skončí kódom 0" 'RSCRIPT=/neexistuje "$PYTHON" qc.py --pending > /dev/null 2>&1'
+run_pipeline
+check "web sa publikuje aj bez príznakov kvality" '[ "$(index_slots)" = 3 ]'
 
 echo "== poistky"
 pages_before=$(git --git-dir="$REMOTE" rev-parse "$PAGES_BRANCH")
