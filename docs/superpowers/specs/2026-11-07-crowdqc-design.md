@@ -36,7 +36,7 @@ Spúšťa sa originálny balík (`CrowdQCplus` ≥ 1.1.2) bez úprav:
 
 1. `cqcp_padding()` – zarovnanie na pravidelnú hodinovú mriežku.
 2. `cqcp_check_input()` – kontrola vstupu.
-3. `cqcp_qcCWS(..., complete = TRUE, keep_isolated = TRUE)` – m1–m5, voliteľné kroky o1–o4 vypnuté,
+3. `cqcp_qcCWS(data, complete = TRUE, m5_keep_isolated = TRUE, includeOptional = FALSE)` – m1–m5, voliteľné kroky o1–o4 vypnuté,
    ostatné parametre predvolené (m2: low 0,01 / high 0,95, výšková korekcia 0,0065 K/m; m3: cutOff 0,2;
    m4: cutOff 0,9; m5: 3 km, ≥ 5 susedov, alfa 0,1, max. výškový rozdiel 100 m).
 
@@ -51,18 +51,18 @@ Parametre sú konštanty na jednom mieste v `qc.R`, aby sa dali ladiť.
   súboru kontroly sa vypočíta a zapíše natrvalo. Zapísaný deň sa už nemení.
 - m1, m3, m4 rozhodujú o stanici za celé okno; m2 a m5 označujú jednotlivé hodiny.
   Z výstupu sa uloží len deň, ktorý sa uzatvára.
-- Stanica s málo dátami (menej než 24 platných hodín v okne): balík ju môže vyradiť v m3/m4;
-  **ak ju vyradí len preto, že nemá dosť dát**, mapa ju zobrazí (dôvod `insufficient`, nie `failed`).
-  Presné pravidlo upresní implementácia podľa výstupných stĺpcov balíka.
+- Stanica s málo dátami (menej než 24 platných hodín v okne) sa **vylúči pred volaním R** a mapa ju
+  **zobrazuje** (bez príznaku); do siete pre m2–m5 nevstupuje.
 - Jednorazový príkaz `python qc.py --recompute` prepočíta celú históriu (po zmene pravidiel alebo balíka).
 
 ## 5. Uloženie
 
 V archíve (vetva `data`), append-only, jeden súbor na deň: `qc/YYYY-MM-DD.json`:
 
-- `stations`: riadky registra, ktoré neprešli m1/m3/m4, s dôvodom,
-- `hours`: po UTC hodinách zoznam riadkov označených v m2 alebo m5, s dôvodom,
-- `meta`: verzia balíka, dĺžka okna, použité parametre.
+- `f`: `{"<UTC hodina snímky, epoch s>": [[riadok registra, "m1".."m5"], ...]}` – stanice, ktoré neprešli;
+  dôvod je prvá úroveň, ktorá je FALSE (príznaky v balíku sú kumulatívne); stanica vyradená v m1/m3/m4
+  sa uvádza v každej svojej hodine,
+- `ver`, `day`, `window_days`, `min_hours`, `package`, `checked`, `unchecked` (počet staníc).
 
 `scripts/push_data.sh` už ukladá celý `archive/`, takže netreba meniť.
 

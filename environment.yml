@@ -5,3 +5,8 @@ dependencies:
   - python=3.12
   - requests
   - python-dotenv
+  - r-base>=4.4
+  - r-remotes
+  - r-data.table
+  - r-robustbase
+  - r-lubridate
