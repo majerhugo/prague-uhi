@@ -25,6 +25,7 @@ ARCHIVE = Path("archive")
 WINDOW_DAYS = 30
 MIN_HOURS = 24            # stanica s menej platnými hodinami v okne sa nekontroluje (ostáva zobrazená)
 MIN_STATIONS = 100        # pod touto sieťou sú m2/m4 nespoľahlivé (varuje aj balík), deň sa nezapíše
+CENTER = (50.0875, 14.4214)   # Staromestské námestie
 PACKAGE_VERSION = "1.1.2"
 LEVELS = ["m1", "m2", "m3", "m4", "m5"]
 R_SCRIPT = Path(__file__).with_name("qc.R")
@@ -154,15 +155,65 @@ def closed_days(base, now=None):
     return [d for d in _days_with_slots(base, now) if not qc_path(base, d).exists()]
 
 
+def report(base, center=CENTER, near_km=3.0, far_km=8.0):
+    """Text o výsledkoch kontroly: označené hodnoty podľa úrovne a podiel v centre oproti okraju."""
+    base = Path(base)
+    registry_file = base / "registry.json"
+    rows = archive.read_json(registry_file)["rows"] if registry_file.exists() else []
+
+    def zone(row):
+        km = archive.distance_m(center[0], center[1], rows[row][1], rows[row][2]) / 1000
+        return "center" if km < near_km else "edge" if km > far_km else "ring"
+
+    days = sorted(p for p in (base / "qc").glob("*.json")) if (base / "qc").exists() else []
+    by_level = {m: 0 for m in LEVELS}
+    flagged_rows, seen_rows = set(), set()
+    total = {"center": 0, "ring": 0, "edge": 0}
+    failed = dict(total)
+    for path in days:
+        data = archive.read_json(path)
+        day = date.fromisoformat(data["day"])
+        for slot_path in sorted((base / "slots" / f"{day:%Y-%m-%d}").glob("*.json")):
+            slot = archive.read_json(slot_path)
+            bad = {row: level for row, level in data["f"].get(str(slot["slot"]), [])}
+            for row in slot["i"]:
+                seen_rows.add(row)
+                total[zone(row)] += 1
+                if row in bad:
+                    failed[zone(row)] += 1
+                    by_level[bad[row]] += 1
+                    flagged_rows.add(row)
+
+    def line(name, label):
+        n = total[name]
+        return f"  {label}: {failed[name]} of {n} ({(100 * failed[name] / n if n else 0):.0f} %)"
+
+    return chr(10).join([
+        f"QC report: {len(days)} checked days",
+        "Flagged station-hours by first failed level:",
+        *(f"  {m}: {by_level[m]}" for m in LEVELS),
+        f"stations flagged at least once: {len(flagged_rows)} of {len(seen_rows)}",
+        "Flagged station-hours by zone:",
+        line("center", f"center (<{near_km:g} km)"),
+        line("ring", f"ring ({near_km:g}-{far_km:g} km)"),
+        line("edge", f"edge (>{far_km:g} km)"),
+    ])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--archive", default=str(ARCHIVE), help="adresár archívu (predvolene archive)")
     parser.add_argument("--pending", action="store_true",
                         help="vypíše pending=true|false (aj do $GITHUB_OUTPUT), či je čo počítať; R nepotrebuje")
     parser.add_argument("--day", help="spočíta jeden deň (RRRR-MM-DD) aj vtedy, keď súbor už existuje")
+    parser.add_argument("--report", action="store_true", help="vypíše súhrn výsledkov kontroly a skončí")
     parser.add_argument("--recompute", action="store_true", help="prepočíta všetky uzavreté dni a prepíše súbory")
     args = parser.parse_args(argv)
     base = Path(args.archive)
+
+    if args.report:
+        print(report(base))
+        return 0
 
     if args.pending:
         line = f"pending={'true' if closed_days(base) else 'false'}"

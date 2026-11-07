@@ -148,6 +148,22 @@ class ScheduleTest(TempDirTest):
         self.assertFalse((self.base / "qc").exists())
 
 
+class ReportTest(TempDirTest):
+    def test_report_counts_by_level_and_zone(self):
+        day = date(2026, 11, 1)
+        for hour in (5, 6):                            # stanica 0 v centre, stanica 1 na okraji
+            self.add_slot(ts(day, hour), {"c": (10.0, 50.0875, 14.4214), "e": (10.0, 50.2, 14.6)})
+        archive.write_json(qc.qc_path(self.base, day), {
+            "ver": 1, "day": "2026-11-01", "checked": 2, "unchecked": 0,
+            "f": {str(ts(day, 5)): [[0, "m2"]], str(ts(day, 6)): [[0, "m2"], [1, "m5"]]}})
+        text = qc.report(self.base)
+        self.assertIn("m2: 2", text)
+        self.assertIn("m5: 1", text)
+        self.assertIn("stations flagged at least once: 2 of 2", text)
+        self.assertIn("center (<3 km): 2 of 2", text)
+        self.assertIn("edge (>8 km): 1 of 2", text)
+
+
 LAST_DAY = date(2026, 11, 14)
 
 
