@@ -136,8 +136,7 @@ jobs:
             Rscript scripts/install_r_deps.R
           } 2>&1 | tee r-install.log || {
             # koniec logu ako anotácia, aby chyba bola vidieť aj bez prihlásenia a otvárania logov
-            echo "::error::R install failed: $(tail -n 12 r-install.log | tr '
-' ' ' | cut -c1-900)"
+            echo "::error::R install failed: $(tail -n 12 r-install.log | tr -s '[:space:]' ' ' | cut -c1-900)"
             exit 1
           }
 
