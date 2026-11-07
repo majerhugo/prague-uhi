@@ -122,6 +122,15 @@ function color(v) {
 
 const fmt = v => (v > 0 ? "+" : "") + v.toFixed(1);
 
+// CrowdQC+: úroveň, ktorú stanica prvú neprešla
+const QC_LEVELS = {
+  m1: "duplicate location",
+  m2: "outlier in the network distribution",
+  m3: "too many outliers",
+  m4: "poor correlation with the network",
+  m5: "outlier among neighbouring stations",
+};
+
 function makeIcon(uhi, withLabel) {
   const size = withLabel ? 32 : 12;
   const textColor = uhi >= 3.5 || uhi <= -1.5 ? "#fff" : "#111";
@@ -167,8 +176,10 @@ const panel = info.getContainer();
 const urban = L.layerGroup().addTo(map);
 const city = L.layerGroup().addTo(map);
 const reference = L.layerGroup().addTo(map);
+const failed = L.layerGroup();  // stanice, ktoré neprešli kontrolou kvality; predvolene skryté
 L.control.layers(null, {
   "Netatmo stations (UHI intensity)": urban,
+  "Netatmo stations that failed QC (grey)": failed,
   "CHMI stations (UHI intensity)": city,
   "CHMI reference stations": reference,
 }, { position: "topleft" }).addTo(map);
@@ -244,6 +255,12 @@ function loadBundle(slot) {
 }
 
 function popupHtml(p) {
+  if (p.role === "failed") {
+    return `<b>Failed quality control</b><br>CrowdQC+ ${p.level}: ${QC_LEVELS[p.level] || "failed"}<br>
+      Air temperature: ${p.temp.toFixed(1)} °C<br>
+      Observed: ${fmtTime(p.time)}<br>
+      <span style="color:#888">Netatmo station ${p.id}</span>`;
+  }
   if (p.role === "reference") {
     return `<b>${p.name}</b><br>CHMI reference station<br>
       Air temperature: ${p.temp.toFixed(1)} °C<br>
@@ -287,6 +304,7 @@ function clearMap() {
   urban.clearLayers();
   city.clearLayers();
   reference.clearLayers();
+  failed.clearLayers();
   markers.length = 0;
 }
 
@@ -316,9 +334,17 @@ function renderSlot(slot) {
   const stamps = slot.o.map(o => slot.base + o);
   const sorted = [...stamps].sort((a, b) => a - b);
   const median = sorted[sorted.length >> 1];
-  let shown = 0, missing = 0, partial = 0;
+  const failedBy = new Map(slot.q || []);  // riadok -> úroveň; slot.q chýba, kým deň nie je skontrolovaný
+  let shown = 0, missing = 0, partial = 0, qcFailed = 0;
   slot.i.forEach((row, j) => {
     const [mac, lat, lon, alt] = registry[row];
+    if (failedBy.has(row)) {
+      qcFailed++;
+      L.circleMarker([lat, lon], { radius: 5, color: "#777", weight: 1, fillColor: "#bbb", fillOpacity: 0.85 })
+        .bindPopup(popupHtml({ role: "failed", level: failedBy.get(row), id: mac, temp: slot.t[j] / 10, time: slot.base + slot.o[j] }))
+        .addTo(failed);
+      return;
+    }
     const refTime = nearestTerm(stamps[j]);
     const r = refAt(refTime);
     if (r == null) { missing++; return; }
@@ -361,6 +387,10 @@ function renderSlot(slot) {
     air temperature outside the city (mean of CHMI stations ${names.join(" and ")})</p>
     <b>Netatmo:</b> ${shown} stations, observed ${fmtHM(sorted[0])}–${fmtHM(sorted.at(-1))}<br>
     <b>CHMI reference:</b> ${refMean == null ? "n/a" : `${refMean.value.toFixed(1)} °C at ${fmtHM(medTerm)}${partialNote(refMean)}`}
+    ${slot.q === undefined
+      ? `<div class="warn">Preliminary: not yet quality-checked (CrowdQC+ is applied after the day ends).</div>`
+      : `<br><b>Failed QC:</b> ${qcFailed} stations (hidden)`}
+    <div class="muted">Quality control: CrowdQC+ (hourly snapshots, 30-day window).</div>
     ${missing ? `<div class="warn">${missing} stations without a reference value are not shown.</div>` : ""}
     ${partial ? `<div class="warn">For ${partial} stations the reference uses only the available CHMI station.</div>` : ""}`);
 }
