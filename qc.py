@@ -8,6 +8,7 @@ ktorá je FALSE (príznaky v balíku sú kumulatívne).
 
 Premenná prostredia RSCRIPT môže určiť príkaz R, napr. "conda run -n netatmo-uhi Rscript".
 """
+import argparse
 import csv
 import os
 import shlex
@@ -15,7 +16,7 @@ import shutil
 import statistics
 import subprocess
 import tempfile
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import archive
@@ -130,3 +131,64 @@ def run_day(base, day, rscript=None):
     n = sum(len(v) for v in data["f"].values())
     print(f"  {day:%Y-%m-%d}: {checked} staníc, označených hodnôt {n}, nekontrolovaných staníc {unchecked}")
     return True
+
+
+def _days_with_slots(base, now=None):
+    """UTC dni, ktoré majú aspoň jednu snímku a sú uzavreté (pred dnešným UTC dňom)."""
+    now = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+    today = archive.utc(now).date()
+    days = []
+    for d in (Path(base) / "slots").glob("*"):
+        if d.is_dir() and any(d.glob("*.json")):
+            try:
+                day = date.fromisoformat(d.name)
+            except ValueError:
+                continue
+            if day < today:
+                days.append(day)
+    return sorted(days)
+
+
+def closed_days(base, now=None):
+    """Uzavreté UTC dni so snímkou, pre ktoré ešte nie je súbor kontroly."""
+    return [d for d in _days_with_slots(base, now) if not qc_path(base, d).exists()]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--archive", default=str(ARCHIVE), help="adresár archívu (predvolene archive)")
+    parser.add_argument("--pending", action="store_true",
+                        help="vypíše pending=true|false (aj do $GITHUB_OUTPUT), či je čo počítať; R nepotrebuje")
+    parser.add_argument("--day", help="spočíta jeden deň (RRRR-MM-DD) aj vtedy, keď súbor už existuje")
+    parser.add_argument("--recompute", action="store_true", help="prepočíta všetky uzavreté dni a prepíše súbory")
+    args = parser.parse_args(argv)
+    base = Path(args.archive)
+
+    if args.pending:
+        line = f"pending={'true' if closed_days(base) else 'false'}"
+        print(line)
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                f.write(line + chr(10))
+        return 0
+
+    if args.day:
+        days = [date.fromisoformat(args.day)]
+    elif args.recompute:
+        days = _days_with_slots(base)
+    else:
+        days = closed_days(base)
+    if not days:
+        print("Kontrola kvality: nie je čo počítať")
+        return 0
+    rscript = find_rscript()
+    if not rscript:
+        print("::warning::Rscript nie je dostupný, kontrola kvality sa nespustila")
+        return 2
+    print(f"Kontrola kvality: {len(days)} dní")
+    failed = [d for d in days if not run_day(base, d, rscript)]
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,11 +1,15 @@
 """Testy kontroly kvality: python -m unittest test_qc -v
 Testy s R (RIntegrationTest) sa preskočia, ak nie je dostupný Rscript (premenná RSCRIPT alebo PATH)."""
+import contextlib
 import csv
+import io
 import json
 import math
+import os
 import random
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -101,6 +105,47 @@ class RunDayTest(TempDirTest):
         self.add_slot(ts(day, 0), {"a": (10.0, 50.0, 14.4)})
         self.assertFalse(qc.run_day(self.base, day, rscript=["/nonexistent/Rscript"]))
         self.assertFalse(qc.qc_path(self.base, day).exists())
+
+
+class ScheduleTest(TempDirTest):
+    def archive_days(self):
+        for d in (1, 2, 3):
+            self.add_slot(ts(date(2026, 11, d), 5), {"a": (10.0, 50.0, 14.4)})
+
+    def run_main(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = qc.main([*args, "--archive", str(self.base)])
+        return code, out.getvalue()
+
+    def test_closed_days_excludes_today_and_checked(self):
+        self.archive_days()
+        archive.write_json(qc.qc_path(self.base, date(2026, 11, 1)), {"ver": 1})
+        self.assertEqual(qc.closed_days(self.base, now=ts(date(2026, 11, 3), 12)), [date(2026, 11, 2)])
+
+    def test_closed_days_empty_archive(self):
+        self.assertEqual(qc.closed_days(self.base), [])
+
+    def test_pending_flag_output(self):
+        gh = self.work / "gh_output"
+        with mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(gh)}):
+            code, out = self.run_main("--pending")
+            self.assertEqual((code, out.strip()), (0, "pending=false"))
+            self.archive_days()
+            code, out = self.run_main("--pending")
+        self.assertEqual((code, out.strip()), (0, "pending=true"))
+        self.assertEqual(gh.read_text(encoding="utf-8").splitlines(), ["pending=false", "pending=true"])
+
+    def test_nothing_to_do_returns_0_without_rscript(self):
+        with mock.patch.object(qc, "find_rscript", return_value=None):
+            self.assertEqual(self.run_main()[0], 0)
+
+    def test_main_without_rscript_returns_2_and_writes_nothing(self):
+        self.archive_days()
+        with mock.patch.object(qc, "find_rscript", return_value=None):
+            code, _ = self.run_main()
+        self.assertEqual(code, 2)
+        self.assertFalse((self.base / "qc").exists())
 
 
 LAST_DAY = date(2026, 11, 14)
