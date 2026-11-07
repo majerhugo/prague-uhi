@@ -180,14 +180,38 @@ class RefStore:
         return changed
 
 
+# --- Kontrola kvality --------------------------------------------------------------
+
+class QcStore:
+    """Príznaky kontroly kvality (qc/RRRR-MM-DD.json, pozri qc.py); deň bez súboru nie je skontrolovaný."""
+
+    def __init__(self, base):
+        self.dir = Path(base) / "qc"
+        self.cache = {}
+
+    def day(self, day):
+        if day not in self.cache:
+            path = self.dir / f"{day:%Y-%m-%d}.json"
+            self.cache[day] = read_json(path) if path.exists() else None
+        return self.cache[day]
+
+    def flags(self, slot):
+        """{riadok registra: úroveň, ktorú stanica neprešla} pre snímku; None, ak deň nie je skontrolovaný."""
+        data = self.day(utc(slot).date())
+        if data is None:
+            return None
+        return {int(row): level for row, level in data["f"].get(str(slot), [])}
+
+
 # --- Súbory pre web ----------------------------------------------------------------
 
-def web_slot(slot, refs, ref_ids, now, city_ids=()):
+def web_slot(slot, refs, ref_ids, now, city_ids=(), qc=None):
     """Snímka pre web: pridá teploty ČHMÚ pre 10-min. termíny, ktoré snímka používa.
 
     "r" = referenčné stanice, "c" = mestské stanice ČHMÚ (v poradí zadaných identifikátorov).
     Referencia je priemer dostupných referenčných staníc, takže stačí, ak má každý termín aspoň
-    jednu z nich. Vráti None, kým to ČHMÚ nezverejní (a snímka nie je dosť stará). Ak chýbajúcu
+    jednu z nich. "q" = [[riadok, úroveň], ...] stanice, ktoré neprešli kontrolou kvality (kľúč chýba,
+    kým deň nie je skontrolovaný, t. j. qc je None). Vráti None, kým to ČHMÚ nezverejní (a snímka nie je dosť stará). Ak chýbajúcu
     hodnotu ČHMÚ neskôr doplní, ďalší prepočet webu ju použije.
     """
     first = nearest_term(slot["base"] + min(slot["o"]))
@@ -199,6 +223,8 @@ def web_slot(slot, refs, ref_ids, now, city_ids=()):
         return None
     out = {"slot": slot["slot"], "base": slot["base"], "i": slot["i"], "t": slot["t"],
            "o": slot["o"], "r0": first, "r": ref}
+    if qc is not None:
+        out["q"] = sorted([row, level] for row, level in qc.items())
     if city_ids:
         out["c"] = [[refs.get(wsi, t) for t in terms] for wsi in city_ids]
     return out
@@ -211,12 +237,14 @@ def build_web(base, out, ref_stations, now=None, city_stations=()):
     registry_file = base / "registry.json"
     registry = read_json(registry_file) if registry_file.exists() else {"ver": 1, "rows": []}
     refs = RefStore(base)
+    qc = QcStore(base)
     ref_ids = [s["id"] for s in ref_stations]
     city_ids = [s["id"] for s in city_stations]
 
     days = defaultdict(list)
     for path in sorted((base / "slots").glob("*/*.json")):
-        slot = web_slot(read_json(path), refs, ref_ids, now, city_ids)
+        data = read_json(path)
+        slot = web_slot(data, refs, ref_ids, now, city_ids, qc.flags(data["slot"]))
         if slot:
             days[f"{utc(slot['slot']):%Y-%m-%d}"].append(slot)
 

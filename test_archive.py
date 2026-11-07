@@ -143,6 +143,17 @@ class ChmiRecentUrlsTest(unittest.TestCase):
         self.assertEqual([u[-13:] for u in urls[1:]], ["20261101.json", "20261102.json", "20261103.json"])
 
 
+class QcStoreTest(TempDirTest):
+    def test_flags_none_when_no_file(self):
+        self.assertIsNone(archive.QcStore(self.base).flags(T0))
+
+    def test_flags_map_row_to_level(self):
+        archive.write_json(self.base / "qc" / "2026-11-01.json", {"ver": 1, "f": {str(T0): [[4, "m5"]]}})
+        store = archive.QcStore(self.base)
+        self.assertEqual(store.flags(T0), {4: "m5"})
+        self.assertEqual(store.flags(T0 + 3600), {})
+
+
 class WebTest(TempDirTest):
     def make(self, offsets, ref_terms):
         """Snímka s meraniami v daných posunoch od T0 a referenciou pre zadané termíny."""
@@ -192,6 +203,30 @@ class WebTest(TempDirTest):
         self.assertEqual(day["slots"][0]["c"], [[70, None]])
         index = json.loads((self.out / "index.json").read_text(encoding="utf-8"))
         self.assertEqual(index["city_stations"], city)
+
+    def write_qc(self, flags):
+        archive.write_json(self.base / "qc" / "2026-11-01.json", {"ver": 1, "day": "2026-11-01", "f": flags})
+
+    def day_slot(self):
+        day = json.loads((self.out / "days" / "2026-11-01.json").read_text(encoding="utf-8"))
+        return day["slots"][0]
+
+    def test_checked_day_gets_q(self):
+        self.make([2000, 2200], [1800, 2400])
+        self.write_qc({str(T0): [[1, "m2"]]})
+        archive.build_web(self.base, self.out, REF_STATIONS, now=T0 + 3600 + 600)
+        self.assertEqual(self.day_slot()["q"], [[1, "m2"]])
+
+    def test_checked_day_without_failures_has_empty_q(self):
+        self.make([2000, 2200], [1800, 2400])
+        self.write_qc({})
+        archive.build_web(self.base, self.out, REF_STATIONS, now=T0 + 3600 + 600)
+        self.assertEqual(self.day_slot()["q"], [])
+
+    def test_unchecked_day_has_no_q_key(self):
+        self.make([2000, 2200], [1800, 2400])
+        archive.build_web(self.base, self.out, REF_STATIONS, now=T0 + 3600 + 600)
+        self.assertNotIn("q", self.day_slot())
 
     def test_empty_archive_builds_empty_index(self):
         self.assertEqual(archive.build_web(self.base, self.out, REF_STATIONS, now=T0), [])
