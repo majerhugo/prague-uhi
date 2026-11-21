@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prague Urban Heat Island</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  .basemap { filter: grayscale(1) brightness(1.05) contrast(.85); }
+
+  .uhi-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; box-sizing: border-box;
+    border-radius: 50%; border: 1px solid rgba(0, 0, 0, .35);
+    font-size: 11px; font-weight: 600; letter-spacing: -.02em;
+  }
+
+  .ref-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; box-sizing: border-box;
+    background: #222; color: #fff; border: 2px solid #fff; border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+    font-size: 11px; font-weight: 600;
+  }
+
+  .city-marker {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%; box-sizing: border-box;
+    border: 3px solid #111; border-radius: 3px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+    font-size: 11px; font-weight: 700;
+  }
+
+  .sym { display: inline-block; width: 11px; height: 11px; box-sizing: border-box; vertical-align: -1px; margin-right: 5px; }
+  .sym.netatmo { background: #f4a582; border: 1px solid rgba(0, 0, 0, .35); border-radius: 50%; }
+  .sym.city { background: #f4a582; border: 2px solid #111; border-radius: 2px; }
+  .sym.ref { background: #222; border: 1px solid #fff; border-radius: 2px; box-shadow: 0 0 0 1px #888; }
+  .symbols { font-size: 12px; margin-top: 6px; line-height: 1.6; }
+
+  .panel {
+    background: #fff; padding: 10px 12px; border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+    font-size: 13px; line-height: 1.45; max-width: 250px;
+  }
+  .panel h1 { font-size: 15px; margin: 0 0 6px; }
+  .panel .muted { color: #666; font-size: 12px; }
+  .panel .formula { margin: 6px 0; font-size: 12px; }
+  .panel .warn { color: #8a5300; font-size: 12px; margin-top: 4px; }
+  .legend-bar { height: 10px; border-radius: 3px; margin: 8px 0 2px; }
+  .legend-scale { display: flex; justify-content: space-between; font-size: 11px; color: #444; }
+  .error { color: #b00020; }
+
+  .timebar {
+    position: absolute; z-index: 1000; left: 50%; bottom: 28px; transform: translateX(-50%);
+    width: min(760px, calc(100% - 32px)); box-sizing: border-box;
+    background: #fff; padding: 8px 12px 6px; border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3); font-size: 13px;
+  }
+  .timebar[hidden] { display: none; }
+  .timebar-row { display: flex; align-items: center; gap: 8px; }
+  .timebar button {
+    border: 1px solid #bbb; background: #f7f7f7; border-radius: 4px;
+    width: 30px; height: 28px; cursor: pointer; font-size: 12px;
+  }
+  .timebar button:disabled { opacity: .4; cursor: default; }
+  .timebar input[type=range] { flex: 1; min-width: 0; margin: 0; }
+  .timebar input[type=date] { font: inherit; padding: 2px 4px; }
+  .ticks { display: flex; gap: 1px; height: 6px; margin: 2px 41px 0; }
+  .ticks span { flex: 1; background: #c9ced4; border-radius: 1px; }
+  .ticks .gap { background: repeating-linear-gradient(45deg, #e5a0a0, #e5a0a0 2px, #fff 2px, #fff 4px); }
+  .ticks .cur { background: #222; }
+  .slot-label { margin-top: 4px; text-align: center; font-weight: 600; }
+  .slot-label .gap { color: #8a5300; font-weight: 400; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="timebar" id="timebar" hidden>
+  <div class="timebar-row">
+    <button id="prev" type="button" aria-label="Previous hour" title="Previous hour">◀</button>
+    <input id="slider" type="range" min="0" max="0" step="1" value="0" aria-label="Hour of the selected day">
+    <button id="next" type="button" aria-label="Next hour" title="Next hour">▶</button>
+    <input id="date" type="date" aria-label="Date (Prague time)">
+  </div>
+  <div class="ticks" id="ticks"></div>
+  <div class="slot-label" id="slot-label"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Farebná škála intenzity UHI (°C): modrá = chladnejšie než vidiek, červená = teplejšie
+const STOPS = [
+  [-2, [33, 102, 172]],
+  [-1, [103, 169, 207]],
+  [ 0, [247, 247, 247]],
+  [ 1, [253, 219, 199]],
+  [ 2, [244, 165, 130]],
+  [ 3, [214, 96, 77]],
+  [ 4, [178, 24, 43]],
+  [ 5, [103, 0, 31]],
+];
+const LABEL_ZOOM = 12;  // od tohto priblíženia sa zobrazujú čísla
+const REF_STEP = 600;   // s; termíny ČHMÚ
+const HOUR = 3600;
+
+function color(v) {
+  if (v <= STOPS[0][0]) return `rgb(${STOPS[0][1]})`;
+  for (let i = 1; i < STOPS.length; i++) {
+    const [v1, c1] = STOPS[i];
+    if (v <= v1) {
+      const [v0, c0] = STOPS[i - 1];
+      const t = (v - v0) / (v1 - v0);
+      return `rgb(${c0.map((c, k) => Math.round(c + t * (c1[k] - c)))})`;
+    }
+  }
+  return `rgb(${STOPS[STOPS.length - 1][1]})`;
+}
+
+const fmt = v => (v > 0 ? "+" : "") + v.toFixed(1);
+
+// CrowdQC+: úroveň, ktorú stanica prvú neprešla
+const QC_LEVELS = {
+  m1: "duplicate location",
+  m2: "outlier in the network distribution",
+  m3: "too many outliers",
+  m4: "poor correlation with the network",
+  m5: "outlier among neighbouring stations",
+};
+
+function makeIcon(uhi, withLabel) {
+  const size = withLabel ? 32 : 12;
+  const textColor = uhi >= 3.5 || uhi <= -1.5 ? "#fff" : "#111";
+  return L.divIcon({
+    className: "",
+    iconSize: [size, size],
+    html: `<div class="uhi-marker" style="background:${color(uhi)};color:${textColor}">${withLabel ? fmt(uhi) : ""}</div>`,
+  });
+}
+
+const refIcon = temp => L.divIcon({
+  className: "",
+  iconSize: [44, 24],
+  html: `<div class="ref-marker">${temp.toFixed(1)}°</div>`,
+});
+
+// mestská stanica ČHMÚ: štvorec farbou UHI s hrubým čiernym rámom (Netatmo sú kruhy)
+function cityIcon(uhi) {
+  const textColor = uhi >= 3.5 || uhi <= -1.5 ? "#fff" : "#111";
+  return L.divIcon({
+    className: "",
+    iconSize: [40, 26],
+    html: `<div class="city-marker" style="background:${color(uhi)};color:${textColor}">${fmt(uhi)}</div>`,
+  });
+}
+
+const map = L.map("map").setView([50.0755, 14.4378], 11);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  className: "basemap",
+  maxZoom: 19,
+}).addTo(map);
+
+const info = L.control({ position: "topright" });
+info.onAdd = () => {
+  const div = L.DomUtil.create("div", "panel");
+  div.innerHTML = "<h1>Prague Urban Heat Island</h1>Loading…";
+  return div;
+};
+info.addTo(map);
+const panel = info.getContainer();
+
+const urban = L.layerGroup().addTo(map);
+const city = L.layerGroup().addTo(map);
+const reference = L.layerGroup().addTo(map);
+const failed = L.layerGroup();  // stanice, ktoré neprešli kontrolou kvality; predvolene skryté
+L.control.layers(null, {
+  "Netatmo stations (UHI intensity)": urban,
+  "Netatmo stations that failed QC (grey)": failed,
+  "CHMI stations (UHI intensity)": city,
+  "CHMI reference stations": reference,
+}, { position: "topleft" }).addTo(map);
+
+fetch("data/praha.geojson")
+  .then(r => r.json())
+  .then(b => L.geoJSON(b, { interactive: false, style: { color: "#333", weight: 1.5, dashArray: "6 4", fill: false } }).addTo(map))
+  .catch(() => {});
+
+// Časy v archíve sú epoch sekundy (UTC); zobrazujú sa v pražskom čase (SEČ/SELČ sa prepína automaticky).
+const TZ = "Europe/Prague";
+const STALE_HOURS = 4;  // ak je posledná snímka staršia, zobrazí sa upozornenie (bežne má 1-2 h)
+const dateFmt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+const hourFmt = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" });
+const tzFmt = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, timeZoneName: "short" });
+const dateKey = s => dateFmt.format(s * 1000);                 // RRRR-MM-DD v pražskom čase
+const hourOf = s => Number(hourFmt.format(s * 1000));
+const tzName = s => tzFmt.formatToParts(s * 1000).find(p => p.type === "timeZoneName").value;
+const fmtTime = s => new Date(s * 1000).toLocaleString("en-GB", {
+  timeZone: TZ, day: "numeric", month: "short", year: "numeric",
+  hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+});
+const fmtHM = s => new Date(s * 1000).toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+const fmtDay = s => new Date(s * 1000).toLocaleDateString("en-GB", {
+  timeZone: TZ, weekday: "short", day: "numeric", month: "short", year: "numeric",
+});
+const nearestTerm = ts => Math.floor((ts + REF_STEP / 2) / REF_STEP) * REF_STEP;
+
+const timebar = document.getElementById("timebar");
+const slider = document.getElementById("slider");
+const dateInput = document.getElementById("date");
+const prevBtn = document.getElementById("prev");
+const nextBtn = document.getElementById("next");
+const ticks = document.getElementById("ticks");
+const slotLabel = document.getElementById("slot-label");
+L.DomEvent.disableClickPropagation(timebar);
+L.DomEvent.disableScrollPropagation(timebar);
+
+let index = null;          // index.json: zoznam termínov a referenčné stanice
+let registry = [];         // riadky [mac, lat, lon, alt]
+let available = new Set(); // termíny, pre ktoré máme dáta
+let grid = [];             // všetky hodinové termíny od prvého po posledný (aj s medzerami)
+const byDate = new Map();  // pražský dátum -> hodinové termíny toho dňa
+const bundles = new Map(); // UTC dátum -> Promise<Map(termín -> snímka)>
+const markers = [];
+let labelled = map.getZoom() >= LABEL_ZOOM;
+let current = null;
+let loadToken = 0;
+
+// čísla len pri dostatočnom priblížení, inak by sa prekrývali
+map.on("zoomend", () => {
+  const want = map.getZoom() >= LABEL_ZOOM;
+  if (want === labelled) return;
+  labelled = want;
+  for (const mk of markers) mk.setIcon(makeIcon(mk.uhi, want));
+});
+
+async function getJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+function loadBundle(slot) {
+  const day = new Date(slot * 1000).toISOString().slice(0, 10);
+  if (!bundles.has(day)) {
+    const v = encodeURIComponent(index.generated);
+    const p = getJson(`data/days/${day}.json?v=${v}`).then(b => new Map(b.slots.map(s => [s.slot, s])));
+    p.catch(() => bundles.delete(day));
+    bundles.set(day, p);
+  }
+  return bundles.get(day);
+}
+
+function popupHtml(p) {
+  if (p.role === "failed") {
+    return `<b>Failed quality control</b><br>CrowdQC+ ${p.level}: ${QC_LEVELS[p.level] || "failed"}<br>
+      Air temperature: ${p.temp.toFixed(1)} °C<br>
+      Observed: ${fmtTime(p.time)}<br>
+      <span style="color:#888">Netatmo station ${p.id}</span>`;
+  }
+  if (p.role === "reference") {
+    return `<b>${p.name}</b><br>CHMI reference station<br>
+      Air temperature: ${p.temp.toFixed(1)} °C<br>
+      Elevation: ${p.alt} m a.s.l.<br>
+      Observed: ${fmtTime(p.time)}`;
+  }
+  if (p.role === "city") {
+    return `<b>UHI intensity: ${fmt(p.uhi)} °C</b><br>
+      <b>${p.name}</b> (CHMI station)<br>
+      Air temperature: ${p.temp.toFixed(1)} °C<br>
+      CHMI reference: ${p.ref.toFixed(1)} °C${p.refNote || ""}<br>
+      Elevation: ${p.alt} m a.s.l.<br>
+      Observed: ${fmtTime(p.time)}`;
+  }
+  return `<b>UHI intensity: ${fmt(p.uhi)} °C</b><br>
+    Air temperature: ${p.temp.toFixed(1)} °C<br>
+    CHMI reference: ${p.ref.toFixed(1)} °C${p.refNote || ""} at ${fmtHM(p.refTime)}<br>
+    ${p.alt != null ? `Elevation: ${p.alt} m a.s.l.<br>` : ""}
+    Observed: ${fmtTime(p.time)}<br>
+    <span style="color:#888">Netatmo station ${p.id}</span>`;
+}
+
+function setPanel(body) {
+  const stale = Date.now() / 1000 - index.slots.at(-1) > STALE_HOURS * HOUR;
+  const gradient = STOPS.map(([v, c]) => `rgb(${c}) ${((v - STOPS[0][0]) / (STOPS.at(-1)[0] - STOPS[0][0]) * 100).toFixed(0)}%`).join(",");
+  panel.innerHTML = `
+    <h1>Prague Urban Heat Island</h1>
+    ${stale ? `<div class="warn">The latest data are more than ${STALE_HOURS} hours old.</div>` : ""}
+    ${body}
+    <div class="legend-bar" style="background:linear-gradient(to right,${gradient})"></div>
+    <div class="legend-scale">${STOPS.map(([v]) => `<span>${fmt(v)}</span>`).join("")}</div>
+    <div class="muted" style="text-align:center">UHI intensity (°C)</div>
+    <div class="symbols"><span class="sym netatmo"></span>Netatmo station<br>
+    <span class="sym city"></span>CHMI station (UHI)<br>
+    <span class="sym ref"></span>CHMI reference station (temperature)</div>
+    <div class="muted" style="margin-top:6px">Updated: ${fmtTime(Date.parse(index.generated) / 1000)}<br>
+    Data: Netatmo public weather stations; Czech Hydrometeorological Institute (CHMI) open data</div>`;
+}
+
+function clearMap() {
+  urban.clearLayers();
+  city.clearLayers();
+  reference.clearLayers();
+  failed.clearLayers();
+  markers.length = 0;
+}
+
+function renderGap(epoch, reason) {
+  clearMap();
+  setPanel(`<b>${fmtTime(epoch)}</b>
+    <div class="warn">${reason || "No data for this time (data gap)."}</div>`);
+}
+
+function renderSlot(slot) {
+  clearMap();
+  const names = index.ref_stations.map(s => s.name);
+  // referencia = priemer dostupných referenčných staníc; ak niektorej chýba hodnota, použije sa druhá
+  const refAt = term => {
+    const k = (term - slot.r0) / REF_STEP;
+    const used = [], vals = [];
+    slot.r.forEach((row, n) => {
+      if (row[k] != null) {
+        vals.push(row[k]);
+        used.push(names[n].replace(/^Praha-/, ""));
+      }
+    });
+    return vals.length ? { value: vals.reduce((a, b) => a + b, 0) / vals.length / 10, used } : null;
+  };
+  const partialNote = r => (r.used.length < names.length ? ` (${r.used.join(", ")} only)` : "");
+
+  const stamps = slot.o.map(o => slot.base + o);
+  const sorted = [...stamps].sort((a, b) => a - b);
+  const median = sorted[sorted.length >> 1];
+  const failedBy = new Map(slot.q || []);  // riadok -> úroveň; slot.q chýba, kým deň nie je skontrolovaný
+  let shown = 0, missing = 0, partial = 0, qcFailed = 0;
+  slot.i.forEach((row, j) => {
+    const [mac, lat, lon, alt] = registry[row];
+    if (failedBy.has(row)) {
+      qcFailed++;
+      L.circleMarker([lat, lon], { radius: 5, color: "#777", weight: 1, fillColor: "#bbb", fillOpacity: 0.85 })
+        .bindPopup(popupHtml({ role: "failed", level: failedBy.get(row), id: mac, temp: slot.t[j] / 10, time: slot.base + slot.o[j] }))
+        .addTo(failed);
+      return;
+    }
+    const refTime = nearestTerm(stamps[j]);
+    const r = refAt(refTime);
+    if (r == null) { missing++; return; }
+    if (r.used.length < names.length) partial++;
+    const temp = slot.t[j] / 10;
+    const p = { id: mac, alt, temp, ref: r.value, refNote: partialNote(r), refTime, uhi: temp - r.value, time: stamps[j] };
+    const mk = L.marker([lat, lon], { icon: makeIcon(p.uhi, labelled) }).bindPopup(popupHtml(p));
+    mk.uhi = p.uhi;
+    markers.push(mk);
+    urban.addLayer(mk);
+    shown++;
+  });
+
+  const medTerm = nearestTerm(median);
+  const k = (medTerm - slot.r0) / REF_STEP;
+  index.ref_stations.forEach((st, n) => {
+    const v = slot.r[n][k];
+    if (v == null) return;
+    L.marker([st.lat, st.lon], { icon: refIcon(v / 10), zIndexOffset: 1000 })
+      .bindPopup(popupHtml({ role: "reference", name: st.name, temp: v / 10, alt: st.alt, time: medTerm }))
+      .addTo(reference);
+  });
+  const refMean = refAt(medTerm);
+
+  // mestské stanice ČHMÚ: UHI v 10-min. termíne najbližšom k mediánu času meraní Netatmo
+  (index.city_stations || []).forEach((st, n) => {
+    const v = slot.c?.[n]?.[k];
+    if (v == null || !refMean) return;
+    const temp = v / 10;
+    const uhi = temp - refMean.value;
+    L.marker([st.lat, st.lon], { icon: cityIcon(uhi), zIndexOffset: 900 })
+      .bindPopup(popupHtml({ role: "city", name: st.name, temp, alt: st.alt, uhi,
+                             ref: refMean.value, refNote: partialNote(refMean), time: medTerm }))
+      .addTo(city);
+  });
+
+  setPanel(`<b>${fmtTime(median)}</b>
+    <div class="muted">median time of Netatmo observations</div>
+    <p class="formula">UHI intensity = air temperature in the city (Netatmo and CHMI stations) −
+    air temperature outside the city (mean of CHMI stations ${names.join(" and ")})</p>
+    <b>Netatmo:</b> ${shown} stations, observed ${fmtHM(sorted[0])}–${fmtHM(sorted.at(-1))}<br>
+    <b>CHMI reference:</b> ${refMean == null ? "n/a" : `${refMean.value.toFixed(1)} °C at ${fmtHM(medTerm)}${partialNote(refMean)}`}
+    ${slot.q === undefined
+      ? `<div class="warn">Preliminary: not yet quality-checked (CrowdQC+ is applied after the day ends).</div>`
+      : `<br><b>Failed QC:</b> ${qcFailed} stations (hidden)`}
+    <div class="muted">Quality control: CrowdQC+ (hourly snapshots, 20-day window).</div>
+    ${missing ? `<div class="warn">${missing} stations without a reference value are not shown.</div>` : ""}
+    ${partial ? `<div class="warn">For ${partial} stations the reference uses only the available CHMI station.</div>` : ""}`);
+}
+
+function buildTicks(hours) {
+  ticks.replaceChildren(...hours.map(t => {
+    const s = document.createElement("span");
+    s.className = available.has(t) ? "has" : "gap";
+    s.title = `${fmtHM(t)}${available.has(t) ? "" : " – no data"}`;
+    return s;
+  }));
+}
+
+function show(epoch) {
+  current = epoch;
+  const day = dateKey(epoch);
+  const hours = byDate.get(day);
+  if (dateInput.value !== day) dateInput.value = day;
+  if (ticks.dataset.day !== day) {
+    buildTicks(hours);
+    ticks.dataset.day = day;
+  }
+  slider.max = hours.length - 1;
+  slider.value = hours.indexOf(epoch);
+  [...ticks.children].forEach((s, n) => s.classList.toggle("cur", n === hours.indexOf(epoch)));
+  slotLabel.innerHTML = `${fmtDay(epoch)} · ${fmtHM(epoch)}–${fmtHM(epoch + HOUR)} ${tzName(epoch)}`
+    + (available.has(epoch) ? "" : ` <span class="gap">· no data</span>`);
+  prevBtn.disabled = epoch <= grid[0];
+  nextBtn.disabled = epoch >= grid.at(-1);
+
+  if (!available.has(epoch)) return renderGap(epoch);
+  const token = ++loadToken;
+  loadBundle(epoch)
+    .then(slots => {
+      if (token !== loadToken) return;
+      const slot = slots.get(epoch);
+      slot ? renderSlot(slot) : renderGap(epoch);
+    })
+    .catch(err => {
+      if (token === loadToken) renderGap(epoch, `Could not load data (${err.message}).`);
+    });
+}
+
+slider.addEventListener("input", () => show(byDate.get(dateKey(current))[Number(slider.value)]));
+prevBtn.addEventListener("click", () => step(-1));
+nextBtn.addEventListener("click", () => step(1));
+function step(dir) {
+  const next = grid[grid.indexOf(current) + dir];
+  if (next !== undefined) show(next);
+}
+dateInput.addEventListener("change", () => {
+  const hours = byDate.get(dateInput.value);
+  if (!hours) return;
+  const hour = hourOf(current);  // pri zmene dňa ostane rovnaká hodina, ak ju ten deň má
+  show(hours.find(t => hourOf(t) === hour) ?? hours.at(-1));
+});
+
+async function init() {
+  index = await getJson("data/index.json?" + Date.now());
+  if (!index.slots.length) throw new Error("404");
+  registry = (await getJson(`data/registry.json?v=${encodeURIComponent(index.generated)}`)).rows;
+  available = new Set(index.slots);
+  const first = index.slots[0], last = index.slots.at(-1);
+  for (let t = first; t <= last; t += HOUR) {
+    grid.push(t);
+    const day = dateKey(t);
+    if (!byDate.has(day)) byDate.set(day, []);
+    byDate.get(day).push(t);
+  }
+  dateInput.min = dateKey(first);
+  dateInput.max = dateKey(last);
+  timebar.hidden = false;
+  show(last);
+}
+
+init().catch(err => {
+  panel.innerHTML = `<h1>Prague Urban Heat Island</h1>` + (err.message === "404"
+    ? `<div class="muted">No data yet. The first map will appear within about two hours after the service starts.</div>`
+    : `<div class="error">Could not load data (${err.message}).</div>`);
+});
+</script>
+</body>
+</html>
